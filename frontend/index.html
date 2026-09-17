@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RVM Viewer</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <!-- RVM 能力层 SDK（经典脚本须先于 module 执行）：全局 RvmRpc，Worker 内跑 rvmedit.wasm -->
+    <script src="/rvmsdk/rvm-rpc.js"></script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

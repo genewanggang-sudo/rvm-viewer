@@ -1,0 +1,9 @@
+tmp/
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/coverage/
+.env
+.env.*
+!.env.example
+*.local
