@@ -1,7 +1,7 @@
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import type * as THREE from 'three';
 
-const WORKER_URL = '/rvmsdk/rvm-worker.js';
+const WORKER_URL = `${import.meta.env.BASE_URL}rvmsdk/rvm-worker.js`;
 
 interface RvmOpenResult {
   handle: string;

@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { act, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DataChannelHandlers } from '../src/channels/dataChannels.js';
-import { CHANNEL, type GeometryData, type RenderStats } from '../src/protocol.js';
+import { CHANNEL, MSG, PROTOCOL_VERSION } from '../src/protocol.js';
 import type { ViewerController } from '../src/hooks/useViewer.js';
 
 const mocks = vi.hoisted(() => ({
@@ -12,12 +12,12 @@ const mocks = vi.hoisted(() => ({
   initDataChannels: vi.fn(),
   engineInstances: 0,
   engineDispose: vi.fn(),
-  engineSetData: vi.fn(),
   engineSetObject: vi.fn(),
-  dataResult: { vertices: 3, triangles: 1 } as { vertices: number; triangles: number } | null,
+  engineFrameModel: vi.fn(),
+  engineResetCamera: vi.fn(),
   objectResult: { vertices: 9, triangles: 3 },
   importRvmModel: vi.fn(),
-  parseLocalModel: vi.fn(),
+  readLocalRvm: vi.fn(),
 }));
 
 vi.mock('../src/channels/dataChannels.js', () => ({
@@ -33,17 +33,16 @@ vi.mock('../src/viewer/ViewerEngine.js', () => ({
     constructor() {
       mocks.engineInstances += 1;
     }
-
-    setData(data: GeometryData): RenderStats | null {
-      mocks.engineSetData(data);
-      return mocks.dataResult;
-    }
-
-    setObject3D(object: THREE.Object3D): RenderStats {
+    setObject3D(object: THREE.Object3D) {
       mocks.engineSetObject(object);
       return mocks.objectResult;
     }
-
+    frameModel(): void {
+      mocks.engineFrameModel();
+    }
+    resetCamera(): void {
+      mocks.engineResetCamera();
+    }
     dispose(): void {
       mocks.engineDispose();
     }
@@ -51,11 +50,9 @@ vi.mock('../src/viewer/ViewerEngine.js', () => ({
 }));
 
 vi.mock('../src/viewer/rvmSdk.js', () => ({ importRvmModel: mocks.importRvmModel }));
-vi.mock('../src/viewer/localModel.js', () => ({ parseLocalModel: mocks.parseLocalModel }));
+vi.mock('../src/viewer/localModel.js', () => ({ readLocalRvm: mocks.readLocalRvm }));
 
 import { useViewer } from '../src/hooks/useViewer.js';
-
-const geometry: GeometryData = { name: 'cube.obj', format: 'OBJ', pos: [0, 0, 0], tris: [0, 0, 0] };
 
 let controller: ViewerController | null = null;
 
@@ -82,62 +79,53 @@ function current(): ViewerController {
   return controller;
 }
 
-function fakeFile(name: string, bytes = new ArrayBuffer(2)): File {
-  return { name, size: bytes.byteLength, arrayBuffer: async () => bytes } as unknown as File;
+function fakeFile(name: string): File {
+  return { name, size: 3, arrayBuffer: async () => new ArrayBuffer(3) } as unknown as File;
 }
 
+function importedModel(name = 'plant.rvm') {
+  return {
+    object: new THREE.Group(),
+    meta: { sourceFile: name, sourceFormat: 'RVM', nodeCount: 2, entityCount: 4, attributeNodeCount: 0 },
+  };
+}
+
+beforeEach(() => {
+  controller = null;
+  mocks.handlers = undefined;
+  mocks.cleanup.mockReset();
+  mocks.initDataChannels.mockReset();
+  mocks.engineDispose.mockReset();
+  mocks.engineSetObject.mockReset();
+  mocks.engineFrameModel.mockReset();
+  mocks.engineResetCamera.mockReset();
+  mocks.importRvmModel.mockReset();
+  mocks.readLocalRvm.mockReset();
+  mocks.objectResult = { vertices: 9, triangles: 3 };
+});
+
+afterEach(() => {
+  vi.clearAllMocks();
+  vi.unstubAllGlobals();
+});
+
 describe('useViewer', () => {
-  beforeEach(() => {
-    controller = null;
-    mocks.handlers = undefined;
-    mocks.cleanup.mockReset();
-    mocks.initDataChannels.mockReset();
-    mocks.engineDispose.mockReset();
-    mocks.engineSetData.mockReset();
-    mocks.engineSetObject.mockReset();
-    mocks.importRvmModel.mockReset();
-    mocks.parseLocalModel.mockReset();
-    mocks.dataResult = { vertices: 3, triangles: 1 };
-    mocks.objectResult = { vertices: 9, triangles: 3 };
-  });
-
-  afterEach(() => vi.clearAllMocks());
-
-  it('maps channel statuses, geometry, and errors into UI state', async () => {
+  it('maps all file-channel statuses and cleans up its engine', async () => {
     const rendered = render(<Harness />);
-    expect(mocks.initDataChannels).toHaveBeenCalledOnce();
-
     await act(async () => {
       handlers().onStatus(CHANNEL.FILE, 'loading');
+    });
+    expect(current().ui.phase).toBe('loading');
+    await act(async () => {
       handlers().onStatus(CHANNEL.FILE, 'parsing');
-      handlers().onStatus(CHANNEL.FILE, 'waiting');
-      handlers().onStatus(CHANNEL.FILE, 'loaded');
-      handlers().onStatus(CHANNEL.FILE, 'empty');
     });
-    expect(current().ui.phase).toBe('idle');
+    expect(current().ui.phase).toBe('parsing');
+    await act(async () => {
+      handlers().onStatus(CHANNEL.NONE, 'empty');
+    });
+    expect(current().ui).toMatchObject({ source: CHANNEL.NONE, phase: 'idle' });
 
     await act(async () => {
-      expect(handlers().onGeometry(geometry)).toEqual({ vertices: 3, triangles: 1 });
-    });
-    expect(current().ui).toMatchObject({
-      phase: 'loaded',
-      name: 'cube.obj',
-      format: 'OBJ',
-      vertices: 3,
-      triangles: 1,
-    });
-
-    await act(async () => {
-      expect(handlers().onGeometry({ pos: [0, 0, 0], tris: [0, 0, 0] })).toEqual({
-        vertices: 3,
-        triangles: 1,
-      });
-    });
-    expect(current().ui).toMatchObject({ name: 'cube.obj', format: '-' });
-
-    mocks.dataResult = null;
-    await act(async () => {
-      expect(handlers().onGeometry(geometry)).toBeNull();
       handlers().onError('网络断开');
     });
     expect(current().ui).toMatchObject({ phase: 'error', error: '网络断开' });
@@ -147,196 +135,130 @@ describe('useViewer', () => {
     expect(mocks.engineDispose).toHaveBeenCalledOnce();
   });
 
-  it('does not initialize an engine when no canvas is mounted', () => {
-    render(<NoCanvasHarness />);
-    expect(mocks.initDataChannels).not.toHaveBeenCalled();
-  });
-
-  it('renders RVM buffers through the SDK and reports parser failure', async () => {
-    mocks.importRvmModel.mockImplementation(
-      async (_bytes: ArrayBuffer, _name: string, options: { onProgress?: (message: string) => void }) => {
-        options.onProgress?.('正在解析 RVM 场景…');
-        return {
-          object: new THREE.Group(),
-          meta: {
-            sourceFile: 'plant.rvm',
-            sourceFormat: 'RVM',
-            nodeCount: 2,
-            entityCount: 4,
-            attributeNodeCount: 1,
-          },
-        };
-      }
-    );
+  it('renders a workspace RVM and sends a parent completion message', async () => {
+    const parent = { postMessage: vi.fn() } as unknown as WindowProxy;
+    const descriptor = Object.getOwnPropertyDescriptor(window, 'parent');
+    Object.defineProperty(window, 'parent', { configurable: true, value: parent });
+    mocks.importRvmModel.mockImplementation(async (_bytes: ArrayBuffer, _name: string, options) => {
+      options.onProgress?.('正在解析 RVM 场景…');
+      return importedModel();
+    });
     render(<Harness />);
 
     await act(async () => {
-      await expect(handlers().onFileBuffer?.({ bytes: new ArrayBuffer(3), name: 'plant.rvm' })).resolves.toBe(
+      await expect(handlers().onRvmFile({ bytes: new ArrayBuffer(3), name: 'plant.rvm' })).resolves.toBe(
         true
       );
     });
-    expect(current().ui).toMatchObject({ phase: 'loaded', name: 'plant.rvm', vertices: 9, triangles: 3 });
+    expect(current().ui).toMatchObject({ phase: 'loaded', source: CHANNEL.FILE, name: 'plant.rvm' });
     expect(current().ui.detail).toContain('节点 2');
+    expect(parent.postMessage).toHaveBeenCalledWith(
+      { v: PROTOCOL_VERSION, type: MSG.RENDERED, name: 'plant.rvm', vertices: 9, triangles: 3 },
+      '*'
+    );
+    if (descriptor) Object.defineProperty(window, 'parent', descriptor);
+  });
 
-    mocks.importRvmModel.mockRejectedValueOnce(new Error('损坏'));
+  it('reports RVM parser failure without a parent frame', async () => {
+    mocks.importRvmModel.mockRejectedValueOnce('损坏');
+    render(<Harness />);
     await act(async () => {
-      await expect(handlers().onFileBuffer?.({ bytes: new ArrayBuffer(3) })).resolves.toBe(false);
+      await expect(handlers().onRvmFile({ bytes: new ArrayBuffer(3), name: 'bad.rvm' })).resolves.toBe(false);
     });
     expect(current().ui).toMatchObject({ phase: 'error', error: 'RVM 解析失败：损坏' });
   });
 
-  it('loads local geometry, RVM attributes, and reports parsing failures', async () => {
-    mocks.parseLocalModel.mockResolvedValueOnce({ kind: 'geometry', data: geometry });
+  it('loads local RVM files and reports local read errors', async () => {
+    mocks.readLocalRvm.mockResolvedValueOnce({ bytes: new ArrayBuffer(4), name: 'local.rvm' });
+    mocks.importRvmModel.mockResolvedValueOnce(importedModel('local.rvm'));
     render(<Harness />);
-
     await act(async () => {
-      await current().loadLocalFiles(fakeFile('cube.obj'));
+      await current().loadLocalRvm(fakeFile('local.rvm'));
     });
-    expect(mocks.parseLocalModel).toHaveBeenCalledWith(expect.objectContaining({ name: 'cube.obj' }), 1024);
+    expect(mocks.readLocalRvm).toHaveBeenCalledWith(expect.objectContaining({ name: 'local.rvm' }), 1024);
     expect(current().ui).toMatchObject({ source: CHANNEL.LOCAL, phase: 'loaded' });
 
-    mocks.parseLocalModel.mockResolvedValueOnce({
-      kind: 'rvm',
-      bytes: new ArrayBuffer(4),
-      name: 'plant.rvm',
-    });
-    mocks.importRvmModel.mockResolvedValueOnce({
-      object: new THREE.Group(),
-      meta: {
-        sourceFile: 'plant.rvm',
-        sourceFormat: 'RVM',
-        nodeCount: 0,
-        entityCount: 0,
-        attributeNodeCount: 0,
-      },
-    });
+    mocks.readLocalRvm.mockRejectedValueOnce(new Error('文件过大'));
     await act(async () => {
-      await current().loadLocalFiles(fakeFile('plant.rvm'), fakeFile('plant.att', new ArrayBuffer(5)));
+      await current().loadLocalRvm(fakeFile('large.rvm'));
     });
-    expect(mocks.importRvmModel).toHaveBeenCalledWith(
-      expect.any(ArrayBuffer),
-      'plant.rvm',
-      expect.objectContaining({ attrs: expect.any(ArrayBuffer) })
-    );
-
-    mocks.parseLocalModel.mockResolvedValueOnce({
-      kind: 'rvm',
-      bytes: new ArrayBuffer(4),
-      name: 'without-attributes.rvm',
+    expect(current().ui).toMatchObject({
+      source: CHANNEL.LOCAL,
+      phase: 'error',
+      error: 'RVM 文件加载失败：文件过大',
     });
-    mocks.importRvmModel.mockResolvedValueOnce({
-      object: new THREE.Group(),
-      meta: {
-        sourceFile: 'without-attributes.rvm',
-        sourceFormat: 'RVM',
-        nodeCount: 0,
-        entityCount: 0,
-        attributeNodeCount: 0,
-      },
-    });
-    await act(async () => {
-      await current().loadLocalFiles(fakeFile('without-attributes.rvm'));
-    });
-    expect(mocks.importRvmModel).toHaveBeenLastCalledWith(
-      expect.any(ArrayBuffer),
-      'without-attributes.rvm',
-      expect.objectContaining({ attrs: undefined })
-    );
-
-    mocks.parseLocalModel.mockRejectedValueOnce('失败');
-    await act(async () => {
-      await current().loadLocalFiles(fakeFile('bad.obj'));
-    });
-    expect(current().ui).toMatchObject({ phase: 'error', error: '本地文件加载失败：失败' });
   });
 
-  it('stops stale file work after unmount', async () => {
-    let resolveParse: ((value: { kind: 'geometry'; data: GeometryData }) => void) | undefined;
-    mocks.parseLocalModel.mockReturnValueOnce(
-      new Promise<{ kind: 'geometry'; data: GeometryData }>((resolve) => {
-        resolveParse = resolve;
+  it('loads the development test RVM and handles test fetch failures', async () => {
+    mocks.importRvmModel.mockResolvedValueOnce(importedModel('WD1-PSUP.RVM'));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, arrayBuffer: async () => new ArrayBuffer(2) })
+    );
+    render(<Harness />);
+    await act(async () => {
+      await current().loadTestRvm();
+    });
+    expect(fetch).toHaveBeenCalledWith('/__rvm-testdata/WD1-PSUP.RVM');
+    expect(current().ui).toMatchObject({ source: CHANNEL.TEST, phase: 'loaded' });
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 404 }));
+    await act(async () => {
+      await current().loadTestRvm();
+    });
+    expect(current().ui).toMatchObject({
+      source: CHANNEL.TEST,
+      phase: 'error',
+      error: '测试 RVM 加载失败：HTTP 404',
+    });
+  });
+
+  it('forwards camera commands to the active engine', () => {
+    render(<Harness />);
+    current().frameCamera();
+    current().resetCamera();
+    expect(mocks.engineFrameModel).toHaveBeenCalledOnce();
+    expect(mocks.engineResetCamera).toHaveBeenCalledOnce();
+  });
+
+  it('ignores work that completes after unmount and no-ops without an engine', async () => {
+    let resolveRead: ((value: { bytes: ArrayBuffer; name: string }) => void) | undefined;
+    mocks.readLocalRvm.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveRead = resolve;
       })
     );
     const rendered = render(<Harness />);
-    const pending = current().loadLocalFiles(fakeFile('late.obj'));
+    const pending = current().loadLocalRvm(fakeFile('late.rvm'));
     rendered.unmount();
-
     await act(async () => {
-      resolveParse?.({ kind: 'geometry', data: geometry });
+      resolveRead?.({ bytes: new ArrayBuffer(3), name: 'late.rvm' });
       await pending;
+      await current().loadLocalRvm(fakeFile('after-unmount.rvm'));
+      await current().loadTestRvm();
     });
-    expect(mocks.engineSetData).not.toHaveBeenCalled();
-
-    await expect(current().loadLocalFiles(fakeFile('after-unmount.obj'))).resolves.toBeUndefined();
+    expect(mocks.importRvmModel).not.toHaveBeenCalled();
   });
 
-  it('stops a stale RVM import after unmount', async () => {
-    let resolveImport:
-      | ((value: {
-          object: THREE.Object3D;
-          meta: {
-            sourceFile: string;
-            sourceFormat: string;
-            nodeCount: number;
-            entityCount: number;
-            attributeNodeCount: number;
-          };
-        }) => void)
-      | undefined;
+  it('ignores a stale RVM import after unmount', async () => {
+    let resolveImport: ((value: ReturnType<typeof importedModel>) => void) | undefined;
     mocks.importRvmModel.mockReturnValueOnce(
-      new Promise<{
-        object: THREE.Object3D;
-        meta: {
-          sourceFile: string;
-          sourceFormat: string;
-          nodeCount: number;
-          entityCount: number;
-          attributeNodeCount: number;
-        };
-      }>((resolve) => {
+      new Promise((resolve) => {
         resolveImport = resolve;
       })
     );
     const rendered = render(<Harness />);
-    const pending = handlers().onFileBuffer?.({ bytes: new ArrayBuffer(3), name: 'late.rvm' });
+    const pending = handlers().onRvmFile({ bytes: new ArrayBuffer(3), name: 'late.rvm' });
     rendered.unmount();
-
     await act(async () => {
-      resolveImport?.({
-        object: new THREE.Group(),
-        meta: {
-          sourceFile: 'late.rvm',
-          sourceFormat: 'RVM',
-          nodeCount: 0,
-          entityCount: 0,
-          attributeNodeCount: 0,
-        },
-      });
+      resolveImport?.(importedModel('late.rvm'));
       await expect(pending).resolves.toBe(false);
     });
     expect(mocks.engineSetObject).not.toHaveBeenCalled();
   });
 
-  it('stops after a stale local attribute read', async () => {
-    let resolveAttribute: ((value: ArrayBuffer) => void) | undefined;
-    mocks.parseLocalModel.mockResolvedValueOnce({ kind: 'rvm', bytes: new ArrayBuffer(3), name: 'late.rvm' });
-    const lateAttribute = {
-      name: 'late.att',
-      size: 1,
-      arrayBuffer: () =>
-        new Promise<ArrayBuffer>((resolve) => {
-          resolveAttribute = resolve;
-        }),
-    } as unknown as File;
-    const rendered = render(<Harness />);
-    const pending = current().loadLocalFiles(fakeFile('late.rvm'), lateAttribute);
-    await act(async () => undefined);
-    rendered.unmount();
-
-    await act(async () => {
-      resolveAttribute?.(new ArrayBuffer(1));
-      await pending;
-    });
-    expect(mocks.importRvmModel).not.toHaveBeenCalled();
+  it('does not initialize an engine when no canvas is mounted', () => {
+    render(<NoCanvasHarness />);
+    expect(mocks.initDataChannels).not.toHaveBeenCalled();
   });
 });

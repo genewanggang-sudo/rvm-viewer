@@ -1,19 +1,25 @@
 export interface RuntimeConfig {
   title: string;
-  enableLocalUpload: boolean;
   maxLocalFileBytes: number;
+  testModelEnabled: boolean;
 }
 
 const DEFAULT_MAX_LOCAL_FILE_MB = 100;
 
-export function getRuntimeConfig(env: Record<string, string | undefined>): RuntimeConfig {
+interface RuntimeEnvironment {
+  DEV?: boolean;
+  VITE_RVM_VIEWER_TITLE?: string;
+  VITE_RVM_MAX_LOCAL_FILE_MB?: string;
+}
+
+export function getRuntimeConfig(env: RuntimeEnvironment): RuntimeConfig {
   const title = env.VITE_RVM_VIEWER_TITLE?.trim() || 'RVM Viewer';
   const maxMegabytes = toPositiveNumber(env.VITE_RVM_MAX_LOCAL_FILE_MB, DEFAULT_MAX_LOCAL_FILE_MB);
 
   return {
     title,
-    enableLocalUpload: env.VITE_RVM_ENABLE_LOCAL_UPLOAD !== 'false',
     maxLocalFileBytes: maxMegabytes * 1024 * 1024,
+    testModelEnabled: env.DEV === true,
   };
 }
 

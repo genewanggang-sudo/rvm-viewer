@@ -1,30 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { MSG, PROTOCOL_VERSION, isValidGeometryPayload } from '../src/protocol.js';
+import { CHANNEL, MSG, PROTOCOL_VERSION, URL_PARAMS } from '../src/protocol.js';
 
-const valid = {
-  v: PROTOCOL_VERSION,
-  type: MSG.GEOMETRY,
-  pos: [0, 0, 0],
-  tris: [0, 0, 0],
-};
-
-describe('isValidGeometryPayload', () => {
-  it('accepts a complete finite payload', () => {
-    expect(isValidGeometryPayload(valid)).toBe(true);
-  });
-
-  it.each([
-    null,
-    'geometry',
-    { ...valid, v: 2 },
-    { ...valid, type: 'other' },
-    { ...valid, pos: [] },
-    { ...valid, pos: [0, 0] },
-    { ...valid, pos: [0, Number.NaN, 0] },
-    { ...valid, tris: [] },
-    { ...valid, tris: [0, 0] },
-    { ...valid, tris: [0, 0, 0.5] },
-  ])('rejects invalid data %#', (candidate) => {
-    expect(isValidGeometryPayload(candidate)).toBe(false);
+describe('RVM protocol constants', () => {
+  it('exposes only the RVM file contract', () => {
+    expect(PROTOCOL_VERSION).toBe(1);
+    expect(MSG).toEqual({ RENDERED: 'rvm-viewer:rendered' });
+    expect(URL_PARAMS).toEqual({ FILE: 'file', NAME: 'name', EMBED: 'embed' });
+    expect(CHANNEL).toEqual({
+      FILE: 'AIDT 工作区文件',
+      LOCAL: '本地选择文件',
+      TEST: '本地测试模型',
+      NONE: '请选择一个 RVM 文件',
+    });
   });
 });

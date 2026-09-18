@@ -1,61 +1,31 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CHANNEL, MSG, PROTOCOL_VERSION, type GeometryData } from '../src/protocol.js';
 import { initDataChannels, type DataChannelHandlers } from '../src/channels/dataChannels.js';
-
-const geometry = {
-  v: PROTOCOL_VERSION,
-  type: MSG.GEOMETRY,
-  name: 'cube.obj',
-  format: 'OBJ',
-  pos: [0, 0, 0],
-  tris: [0, 0, 0],
-};
-
-const deliveredGeometry: GeometryData = {
-  name: 'cube.obj',
-  format: 'OBJ',
-  pos: [0, 0, 0],
-  tris: [0, 0, 0],
-};
-
-function createHandlers(overrides: Partial<DataChannelHandlers> = {}): DataChannelHandlers {
-  return {
-    onGeometry: vi.fn(() => ({ vertices: 1, triangles: 1 })),
-    onStatus: vi.fn(),
-    onError: vi.fn(),
-    onFileBuffer: vi.fn().mockResolvedValue(true),
-    ...overrides,
-  };
-}
-
-function payload(value: unknown): string {
-  return btoa(JSON.stringify(value)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-function response(bytes: ArrayBuffer, status = 200): Response {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    arrayBuffer: vi.fn().mockResolvedValue(bytes),
-  } as unknown as Response;
-}
+import { CHANNEL } from '../src/protocol.js';
 
 function bytes(text: string): ArrayBuffer {
   const encoded = new TextEncoder().encode(text);
   return encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength) as ArrayBuffer;
 }
 
-async function nextTask(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve));
+function response(body: ArrayBuffer, status = 200): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    arrayBuffer: vi.fn().mockResolvedValue(body),
+  } as unknown as Response;
 }
 
-function replaceParent(parent: WindowProxy): () => void {
-  const descriptor = Object.getOwnPropertyDescriptor(window, 'parent');
-  Object.defineProperty(window, 'parent', { configurable: true, value: parent });
-  return () => {
-    if (descriptor) Object.defineProperty(window, 'parent', descriptor);
-    else Reflect.deleteProperty(window, 'parent');
+function handlers(overrides: Partial<DataChannelHandlers> = {}): DataChannelHandlers {
+  return {
+    onRvmFile: vi.fn().mockResolvedValue(true),
+    onStatus: vi.fn(),
+    onError: vi.fn(),
+    ...overrides,
   };
+}
+
+async function nextTask(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve));
 }
 
 afterEach(() => {
@@ -63,187 +33,98 @@ afterEach(() => {
   window.history.replaceState({}, '', '/');
 });
 
-describe('data channel arbitration', () => {
-  it('uses URL payload before other channels and returns a no-op cleanup', () => {
-    window.history.replaceState({}, '', `/?payload=${payload(geometry)}&name=override.obj&demo=1`);
-    const handlers = createHandlers();
-    const cleanup = initDataChannels(handlers);
-    cleanup();
-
-    expect(handlers.onStatus).toHaveBeenCalledWith(CHANNEL.PAYLOAD, 'loaded');
-    expect(handlers.onGeometry).toHaveBeenCalledWith({ ...deliveredGeometry, name: 'override.obj' });
+describe('RVM file channel', () => {
+  it('stays idle until a file URL is supplied', () => {
+    const target = handlers();
+    initDataChannels(target)();
+    expect(target.onStatus).toHaveBeenCalledWith(CHANNEL.NONE, 'empty');
   });
 
-  it('keeps the payload name and skips acknowledgements when rendering rejects it', () => {
-    window.history.replaceState({}, '', `/?payload=${payload(geometry)}`);
-    const handlers = createHandlers({ onGeometry: vi.fn(() => null) });
-    initDataChannels(handlers);
-    expect(handlers.onGeometry).toHaveBeenCalledWith(deliveredGeometry);
+  it('rejects non-RVM URLs before fetching', () => {
+    window.history.replaceState({}, '', '/?file=/workspace/model.obj');
+    const target = handlers();
+    initDataChannels(target);
+    expect(target.onError).toHaveBeenCalledWith('仅支持 .rvm 文件，收到：model.obj');
   });
 
-  it.each(['not-base64', payload({ ...geometry, v: 99 })])('reports invalid payloads', (value) => {
-    window.history.replaceState({}, '', `/?payload=${value}`);
-    const handlers = createHandlers();
-    initDataChannels(handlers);
-    expect(handlers.onError).toHaveBeenCalledWith(expect.stringContaining('payload 解析失败'));
-  });
-
-  it('loads geometry JSON from a workspace file', async () => {
-    window.history.replaceState({}, '', '/?file=/workspace/cube.json&name=remote.json');
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(bytes(JSON.stringify(geometry)))));
-    const handlers = createHandlers();
-    initDataChannels(handlers);
+  it('fetches an RVM, honors the display name, and reports parsing', async () => {
+    window.history.replaceState({}, '', '/?file=/workspace/%E6%A8%A1%E5%9E%8B.rvm&name=plant.rvm');
+    const fetch = vi.fn().mockResolvedValue(response(bytes('RVM')));
+    vi.stubGlobal('fetch', fetch);
+    const target = handlers();
+    initDataChannels(target);
     await nextTask();
 
-    expect(handlers.onStatus).toHaveBeenNthCalledWith(1, CHANNEL.FILE, 'loading');
-    expect(handlers.onStatus).toHaveBeenLastCalledWith(CHANNEL.FILE, 'loaded');
-    expect(handlers.onGeometry).toHaveBeenCalledWith({ ...deliveredGeometry, name: 'remote.json' });
+    expect(fetch).toHaveBeenCalledWith('/workspace/模型.rvm', { credentials: 'include' });
+    expect(target.onStatus).toHaveBeenNthCalledWith(1, CHANNEL.FILE, 'loading');
+    expect(target.onStatus).toHaveBeenNthCalledWith(2, CHANNEL.FILE, 'parsing');
+    expect(target.onRvmFile).toHaveBeenCalledWith({ bytes: bytes('RVM'), name: 'plant.rvm' });
   });
 
-  it('forwards non-geometry files and optional attributes to the parser', async () => {
+  it('accepts a display name without an extension when the file URL is an RVM', async () => {
     window.history.replaceState(
       {},
       '',
-      '/?file=/workspace/plant.rvm&att=/workspace/plant.att&name=plant.rvm'
+      '/?file=/workspace/model.rvm&name=%E5%B7%A5%E5%8E%82%E6%A8%A1%E5%9E%8B'
     );
-    const fetch = vi
-      .fn()
-      .mockResolvedValueOnce(response(bytes('RVM')))
-      .mockResolvedValueOnce(response(bytes('ATT')));
-    vi.stubGlobal('fetch', fetch);
-    const handlers = createHandlers();
-    initDataChannels(handlers);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(bytes('RVM'))));
+    const target = handlers();
+    initDataChannels(target);
     await nextTask();
 
-    expect(handlers.onStatus).toHaveBeenLastCalledWith(CHANNEL.FILE, 'parsing');
-    expect(handlers.onFileBuffer).toHaveBeenCalledWith({
-      bytes: bytes('RVM'),
-      attrs: bytes('ATT'),
-      name: 'plant.rvm',
-    });
+    expect(target.onError).not.toHaveBeenCalled();
+    expect(target.onRvmFile).toHaveBeenCalledWith({ bytes: bytes('RVM'), name: '工厂模型' });
   });
 
-  it('forwards invalid JSON and unavailable optional attributes to the parser', async () => {
-    window.history.replaceState({}, '', '/?file=/workspace/invalid.json&att=/workspace/missing.att');
-    const fetch = vi
-      .fn()
-      .mockResolvedValueOnce(response(bytes('{not-json')))
-      .mockResolvedValueOnce(response(new ArrayBuffer(0), 404));
-    vi.stubGlobal('fetch', fetch);
-    const handlers = createHandlers();
-    initDataChannels(handlers);
+  it('derives a name from an absolute URL and reports unsupported parser results', async () => {
+    window.history.replaceState({}, '', '/?file=https%3A%2F%2Ffiles.example%2Fspace%2Fremote.rvm');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(bytes('RVM'))));
+    const target = handlers({ onRvmFile: vi.fn().mockResolvedValue(false) });
+    initDataChannels(target);
     await nextTask();
-    expect(handlers.onFileBuffer).toHaveBeenCalledWith({
-      bytes: bytes('{not-json'),
-      attrs: undefined,
-      name: undefined,
-    });
+    expect(target.onRvmFile).toHaveBeenCalledWith({ bytes: bytes('RVM'), name: 'remote.rvm' });
+    expect(target.onError).toHaveBeenCalledWith('RVM 未能加载，请检查文件是否完整。');
   });
 
-  it('reports when a file has no parser and when the fetch fails', async () => {
-    window.history.replaceState({}, '', '/?file=/workspace/unknown.bin');
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(bytes('BIN'))));
-    const noParser = createHandlers({ onFileBuffer: vi.fn().mockResolvedValue(false) });
-    initDataChannels(noParser);
+  it('uses model.rvm when a file URL has no basename', async () => {
+    window.history.replaceState({}, '', '/?file=/workspace/');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(bytes('RVM'))));
+    const target = handlers();
+    initDataChannels(target);
     await nextTask();
-    expect(noParser.onError).toHaveBeenCalledWith(expect.stringContaining('暂无对应解析器'));
+    expect(target.onRvmFile).toHaveBeenCalledWith({ bytes: bytes('RVM'), name: 'model.rvm' });
+  });
 
-    window.history.replaceState({}, '', '/?file=/workspace/missing.bin');
+  it('reports HTTP, fetch, parser, and malformed URL failures', async () => {
+    window.history.replaceState({}, '', '/?file=/workspace/missing.rvm');
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(new ArrayBuffer(0), 404)));
-    const missing = createHandlers();
-    initDataChannels(missing);
+    const http = handlers();
+    initDataChannels(http);
     await nextTask();
-    expect(missing.onError).toHaveBeenCalledWith(expect.stringContaining('HTTP 404'));
-  });
+    expect(http.onError).toHaveBeenCalledWith(expect.stringContaining('HTTP 404'));
 
-  it('renders the built-in demo when requested', () => {
-    window.history.replaceState({}, '', '/?demo=1');
-    const handlers = createHandlers();
-    initDataChannels(handlers);
-    expect(handlers.onStatus).toHaveBeenCalledWith(CHANNEL.DEMO, 'loaded');
-    expect(handlers.onGeometry).toHaveBeenCalledWith(expect.objectContaining({ format: 'DEMO' }));
-  });
+    window.history.replaceState({}, '', '/?file=/workspace/error.rvm');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue('offline'));
+    const offline = handlers();
+    initDataChannels(offline);
+    await nextTask();
+    expect(offline.onError).toHaveBeenCalledWith(expect.stringContaining('offline'));
 
-  it('listens for postMessage in a top-level viewer and removes its listener', () => {
-    const handlers = createHandlers();
-    const cleanup = initDataChannels(handlers);
-    expect(handlers.onStatus).toHaveBeenCalledWith(CHANNEL.NONE, 'empty');
-    window.dispatchEvent(new MessageEvent('message', { data: { type: 'invalid' } }));
-    expect(handlers.onGeometry).not.toHaveBeenCalled();
-    window.dispatchEvent(new MessageEvent('message', { data: geometry }));
-    expect(handlers.onGeometry).toHaveBeenCalledWith(deliveredGeometry);
-    window.dispatchEvent(
-      new MessageEvent('message', {
-        data: { v: PROTOCOL_VERSION, type: MSG.GEOMETRY, pos: [0, 0, 0], tris: [0, 0, 0] },
-      })
-    );
+    window.history.replaceState({}, '', '/?file=/workspace/parser.rvm');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(bytes('RVM'))));
+    const parser = handlers({ onRvmFile: vi.fn().mockRejectedValue(new Error('bad parser')) });
+    initDataChannels(parser);
+    await nextTask();
+    expect(parser.onError).toHaveBeenCalledWith(expect.stringContaining('bad parser'));
 
-    cleanup();
-    window.dispatchEvent(new MessageEvent('message', { data: geometry }));
-    expect(handlers.onGeometry).toHaveBeenCalledTimes(2);
-  });
-
-  it('only accepts parent messages when embedded and emits handshake messages', () => {
-    const postMessage = vi.fn();
-    const restoreParent = replaceParent({ postMessage } as unknown as WindowProxy);
-    const handlers = createHandlers();
-    const cleanup = initDataChannels(handlers);
-
-    expect(postMessage).toHaveBeenCalledWith({ v: PROTOCOL_VERSION, type: MSG.READY }, '*');
-    window.dispatchEvent(new MessageEvent('message', { data: geometry, source: window }));
-    expect(handlers.onGeometry).not.toHaveBeenCalled();
-    window.dispatchEvent(
-      new MessageEvent('message', { data: geometry, source: window.parent as unknown as MessageEventSource })
-    );
-    expect(handlers.onGeometry).toHaveBeenCalledWith(deliveredGeometry);
-    expect(postMessage).toHaveBeenLastCalledWith(
-      { v: PROTOCOL_VERSION, type: MSG.RENDERED, name: 'cube.obj', vertices: 1, triangles: 1 },
-      '*'
-    );
-
-    cleanup();
-    restoreParent();
-  });
-
-  it('tolerates an unavailable parent while acknowledging embedded geometry', () => {
-    const restoreParent = replaceParent({
-      postMessage: () => {
-        throw new Error('gone');
-      },
-    } as unknown as WindowProxy);
-    const handlers = createHandlers();
-    initDataChannels(handlers);
-    window.dispatchEvent(
-      new MessageEvent('message', { data: geometry, source: window.parent as unknown as MessageEventSource })
-    );
-    expect(handlers.onGeometry).toHaveBeenCalled();
-    restoreParent();
-  });
-
-  it('stringifies non-Error failures from a payload renderer', () => {
-    window.history.replaceState({}, '', `/?payload=${payload(geometry)}`);
-    const handlers = createHandlers({
-      onGeometry: vi.fn(() => {
-        throw 'render failed';
-      }),
+    window.history.replaceState({}, '', '/?file=http%3A%2F%2F%5Binvalid%2Fmodel.rvm');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(bytes('RVM'))));
+    const malformed = handlers();
+    initDataChannels(malformed);
+    await nextTask();
+    expect(malformed.onRvmFile).toHaveBeenCalledWith({
+      bytes: bytes('RVM'),
+      name: 'http://[invalid/model.rvm',
     });
-    initDataChannels(handlers);
-    expect(handlers.onError).toHaveBeenCalledWith('payload 解析失败：render failed');
-  });
-
-  it('passes a valid JSON geometry without an override name and rejects invalid JSON geometry', async () => {
-    window.history.replaceState({}, '', '/?file=/workspace/model.json');
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(response(bytes(JSON.stringify(geometry)))));
-    const valid = createHandlers();
-    initDataChannels(valid);
-    await nextTask();
-    expect(valid.onGeometry).toHaveBeenCalledWith(deliveredGeometry);
-
-    window.history.replaceState({}, '', '/?file=/workspace/invalid-geometry.json');
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(response(bytes('{"not":"geometry"}'))));
-    const invalid = createHandlers();
-    initDataChannels(invalid);
-    await nextTask();
-    expect(invalid.onFileBuffer).toHaveBeenCalled();
   });
 });

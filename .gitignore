@@ -7,3 +7,4 @@ frontend/coverage/
 .env.*
 !.env.example
 *.local
+*.rar

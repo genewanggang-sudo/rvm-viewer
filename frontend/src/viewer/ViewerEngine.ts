@@ -1,10 +1,14 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import type { GeometryData, RenderStats } from '../protocol.js';
-import { buildGeometry } from './geometry.js';
+import type { RenderStats } from '../protocol.js';
 
 const BACKGROUND_COLOR = 0x101418;
-const MODEL_COLOR = 0x6b9edb;
+const ISOMETRIC_DIRECTION = new THREE.Vector3(1.45, 1.1, 1.45).normalize();
+
+interface CameraFrame {
+  target: THREE.Vector3;
+  distance: number;
+}
 
 export class ViewerEngine {
   private readonly renderer: THREE.WebGLRenderer;
@@ -24,6 +28,7 @@ export class ViewerEngine {
     this.controls = new OrbitControls(this.camera, canvas);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.08;
+    this.controls.enablePan = true;
 
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0x223344, 1.1));
     const keyLight = new THREE.DirectionalLight(0xffffff, 1.6);
@@ -33,32 +38,17 @@ export class ViewerEngine {
     this.resizeHandler = () => this.resize();
     window.addEventListener('resize', this.resizeHandler);
     this.resize();
+    this.resetCamera();
     this.renderLoop();
-  }
-
-  setData(data: GeometryData): RenderStats | null {
-    const built = buildGeometry(data.pos, data.tris);
-    if (!built) return null;
-
-    this.clear();
-    const material = new THREE.MeshStandardMaterial({
-      color: MODEL_COLOR,
-      flatShading: true,
-      metalness: 0.05,
-      roughness: 0.65,
-      side: THREE.DoubleSide,
-    });
-    this.activeObject = new THREE.Mesh(built.geometry, material);
-    this.scene.add(this.activeObject);
-    return { vertices: built.vertices, triangles: built.triangles };
   }
 
   setObject3D(object: THREE.Object3D): RenderStats {
     this.clear();
 
     const box = new THREE.Box3().setFromObject(object);
-    const size = box.getSize(new THREE.Vector3());
-    const center = box.getCenter(new THREE.Vector3());
+    const hasGeometryBounds = !box.isEmpty();
+    const size = hasGeometryBounds ? box.getSize(new THREE.Vector3()) : new THREE.Vector3(1, 1, 1);
+    const center = hasGeometryBounds ? box.getCenter(new THREE.Vector3()) : new THREE.Vector3();
     const extent = Math.max(size.x, size.y, size.z, 1);
     const wrapper = new THREE.Group();
     wrapper.add(object);
@@ -67,7 +57,18 @@ export class ViewerEngine {
 
     this.activeObject = wrapper;
     this.scene.add(wrapper);
+    this.resetCamera();
     return countObjectGeometry(object);
+  }
+
+  frameModel(): void {
+    const frame = this.getCameraFrame();
+    const direction = this.camera.position.clone().sub(this.controls.target);
+    this.applyCameraFrame(frame, direction.lengthSq() > 0 ? direction : ISOMETRIC_DIRECTION);
+  }
+
+  resetCamera(): void {
+    this.applyCameraFrame(this.getCameraFrame(), ISOMETRIC_DIRECTION);
   }
 
   clear(): void {
@@ -94,6 +95,26 @@ export class ViewerEngine {
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
+  }
+
+  private getCameraFrame(): CameraFrame {
+    const box = new THREE.Box3();
+    if (this.activeObject) box.setFromObject(this.activeObject);
+    if (box.isEmpty()) return { target: new THREE.Vector3(), distance: 3 };
+
+    const sphere = box.getBoundingSphere(new THREE.Sphere());
+    const verticalDistance = sphere.radius / Math.sin(THREE.MathUtils.degToRad(this.camera.fov) / 2);
+    const horizontalDistance = verticalDistance / Math.max(this.camera.aspect, 0.75);
+    return { target: sphere.center, distance: Math.max(verticalDistance, horizontalDistance, 1) * 1.24 };
+  }
+
+  private applyCameraFrame(frame: CameraFrame, direction: THREE.Vector3): void {
+    this.controls.target.copy(frame.target);
+    this.camera.position.copy(frame.target).addScaledVector(direction.normalize(), frame.distance);
+    this.camera.near = Math.max(frame.distance / 100, 0.01);
+    this.camera.far = Math.max(frame.distance * 100, 100);
+    this.camera.updateProjectionMatrix();
+    this.controls.update();
   }
 
   private renderLoop(): void {

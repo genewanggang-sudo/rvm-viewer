@@ -3,16 +3,20 @@ import { initDataChannels } from '../channels/dataChannels.js';
 import { runtimeConfig } from '../config.js';
 import {
   CHANNEL,
+  MSG,
+  PROTOCOL_VERSION,
   type ChannelStatus,
   type DataChannel,
-  type GeometryData,
   type RenderStats,
 } from '../protocol.js';
-import { parseLocalModel } from '../viewer/localModel.js';
+import { readLocalRvm } from '../viewer/localModel.js';
 import { importRvmModel } from '../viewer/rvmSdk.js';
 import { ViewerEngine } from '../viewer/ViewerEngine.js';
 
-export type ViewerPhase = 'idle' | 'loading' | 'waiting' | 'parsing' | 'loaded' | 'error';
+const TEST_RVM_URL = '/__rvm-testdata/WD1-PSUP.RVM';
+const TEST_RVM_NAME = 'WD1-PSUP.RVM';
+
+export type ViewerPhase = 'idle' | 'loading' | 'parsing' | 'loaded' | 'error';
 
 export interface ViewerUiState {
   phase: ViewerPhase;
@@ -28,7 +32,10 @@ export interface ViewerUiState {
 export interface ViewerController {
   canvasRef: React.RefObject<HTMLCanvasElement>;
   ui: ViewerUiState;
-  loadLocalFiles: (model: File, attributes?: File) => Promise<void>;
+  loadLocalRvm: (model: File) => Promise<void>;
+  loadTestRvm: () => Promise<void>;
+  frameCamera: () => void;
+  resetCamera: () => void;
 }
 
 const INITIAL_UI: ViewerUiState = {
@@ -47,54 +54,36 @@ export function useViewer(maxLocalFileBytes: number): ViewerController {
   const engineRef = useRef<ViewerEngine | null>(null);
   const [ui, setUi] = useState<ViewerUiState>(INITIAL_UI);
 
-  const renderGeometry = useCallback((engine: ViewerEngine, data: GeometryData): RenderStats | null => {
-    const stats = engine.setData(data);
-    if (!stats) {
-      setUi((state) => ({ ...state, phase: 'error', error: '几何数据无效（顶点/索引校验未通过）' }));
-      return null;
-    }
-
-    setUi((state) => ({
-      ...state,
-      phase: 'loaded',
-      name: data.name || state.name,
-      format: data.format || '-',
-      vertices: stats.vertices,
-      triangles: stats.triangles,
-      error: null,
-    }));
-    return stats;
-  }, []);
-
   const renderRvm = useCallback(
-    async (
-      engine: ViewerEngine,
-      bytes: ArrayBuffer,
-      name: string,
-      attributes?: ArrayBuffer
-    ): Promise<boolean> => {
+    async (engine: ViewerEngine, bytes: ArrayBuffer, name: string, source: DataChannel): Promise<boolean> => {
       try {
         const { object, meta } = await importRvmModel(bytes, name, {
-          attrs: attributes,
-          onProgress: (message) => setUi((state) => ({ ...state, phase: 'parsing', detail: message })),
+          onProgress: (message) =>
+            setUi((state) => ({ ...state, source, phase: 'parsing', detail: message })),
         });
         if (engineRef.current !== engine) return false;
 
         const stats = engine.setObject3D(object);
-        setUi((state) => ({
-          ...state,
+        setUi({
           phase: 'loaded',
+          source,
           name: meta.sourceFile,
           format: meta.sourceFormat,
           vertices: stats.vertices,
           triangles: stats.triangles,
           detail: `节点 ${meta.nodeCount.toLocaleString()} · 实体 ${meta.entityCount.toLocaleString()} · 属性 ${meta.attributeNodeCount.toLocaleString()}`,
           error: null,
-        }));
+        });
+        announceRendered(meta.sourceFile, stats);
         return true;
       } catch (error) {
         if (engineRef.current === engine) {
-          setUi((state) => ({ ...state, phase: 'error', error: `RVM 解析失败：${errorMessage(error)}` }));
+          setUi((state) => ({
+            ...state,
+            source,
+            phase: 'error',
+            error: `RVM 解析失败：${errorMessage(error)}`,
+          }));
         }
         return false;
       }
@@ -109,8 +98,7 @@ export function useViewer(maxLocalFileBytes: number): ViewerController {
     const engine = new ViewerEngine(canvas);
     engineRef.current = engine;
     const cleanup = initDataChannels({
-      onGeometry: (data) => renderGeometry(engine, data),
-      onFileBuffer: ({ bytes, attrs, name }) => renderRvm(engine, bytes, name ?? 'model.rvm', attrs),
+      onRvmFile: ({ bytes, name }) => renderRvm(engine, bytes, name, CHANNEL.FILE),
       onStatus: (source, status) => {
         setUi((state) => ({ ...state, source, phase: mapPhase(status), detail: null, error: null }));
       },
@@ -122,43 +110,57 @@ export function useViewer(maxLocalFileBytes: number): ViewerController {
       if (engineRef.current === engine) engineRef.current = null;
       engine.dispose();
     };
-  }, [renderGeometry, renderRvm]);
+  }, [renderRvm]);
 
-  const loadLocalFiles = useCallback(
-    async (model: File, attributes?: File): Promise<void> => {
+  const loadLocalRvm = useCallback(
+    async (model: File): Promise<void> => {
       const engine = engineRef.current;
       if (!engine) return;
 
-      setUi((state) => ({
-        ...state,
-        source: CHANNEL.LOCAL,
-        phase: 'loading',
-        detail: null,
-        error: null,
-      }));
-
+      setUi((state) => ({ ...state, source: CHANNEL.LOCAL, phase: 'loading', detail: null, error: null }));
       try {
-        const parsed = await parseLocalModel(model, maxLocalFileBytes);
+        const rvm = await readLocalRvm(model, maxLocalFileBytes);
         if (engineRef.current !== engine) return;
-
-        if (parsed.kind === 'geometry') {
-          renderGeometry(engine, parsed.data);
-          return;
-        }
-
-        const attributeBytes = attributes ? await attributes.arrayBuffer() : undefined;
-        if (engineRef.current !== engine) return;
-        await renderRvm(engine, parsed.bytes, parsed.name, attributeBytes);
+        await renderRvm(engine, rvm.bytes, rvm.name, CHANNEL.LOCAL);
       } catch (error) {
         if (engineRef.current === engine) {
-          setUi((state) => ({ ...state, phase: 'error', error: `本地文件加载失败：${errorMessage(error)}` }));
+          setUi((state) => ({
+            ...state,
+            source: CHANNEL.LOCAL,
+            phase: 'error',
+            error: `RVM 文件加载失败：${errorMessage(error)}`,
+          }));
         }
       }
     },
-    [maxLocalFileBytes, renderGeometry, renderRvm]
+    [maxLocalFileBytes, renderRvm]
   );
 
-  return { canvasRef, ui, loadLocalFiles };
+  const loadTestRvm = useCallback(async (): Promise<void> => {
+    const engine = engineRef.current;
+    if (!engine) return;
+
+    setUi((state) => ({ ...state, source: CHANNEL.TEST, phase: 'loading', detail: null, error: null }));
+    try {
+      const response = await fetch(TEST_RVM_URL);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      await renderRvm(engine, await response.arrayBuffer(), TEST_RVM_NAME, CHANNEL.TEST);
+    } catch (error) {
+      if (engineRef.current === engine) {
+        setUi((state) => ({
+          ...state,
+          source: CHANNEL.TEST,
+          phase: 'error',
+          error: `测试 RVM 加载失败：${errorMessage(error)}`,
+        }));
+      }
+    }
+  }, [renderRvm]);
+
+  const frameCamera = useCallback(() => engineRef.current?.frameModel(), []);
+  const resetCamera = useCallback(() => engineRef.current?.resetCamera(), []);
+
+  return { canvasRef, ui, loadLocalRvm, loadTestRvm, frameCamera, resetCamera };
 }
 
 function mapPhase(status: ChannelStatus): ViewerPhase {
@@ -166,13 +168,14 @@ function mapPhase(status: ChannelStatus): ViewerPhase {
     case 'loading':
     case 'parsing':
       return status;
-    case 'waiting':
-      return 'waiting';
-    case 'loaded':
-      return 'loaded';
     case 'empty':
       return 'idle';
   }
+}
+
+function announceRendered(name: string, stats: RenderStats): void {
+  if (window.parent === window) return;
+  window.parent.postMessage({ v: PROTOCOL_VERSION, type: MSG.RENDERED, name, ...stats }, '*');
 }
 
 function errorMessage(error: unknown): string {

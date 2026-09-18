@@ -48,6 +48,24 @@ describe('RVM SDK adapter', () => {
     await expect(getRvmRpc()).resolves.toBe(rpc);
     expect(rpc.start).toHaveBeenCalledOnce();
     expect(rpc.ready).toHaveBeenCalledOnce();
+    expect(window.RvmRpc).toHaveBeenCalledWith({
+      workerUrl: `${import.meta.env.BASE_URL}rvmsdk/rvm-worker.js`,
+    });
+  });
+
+  it('loads the worker below the configured deployment base', async () => {
+    vi.stubEnv('BASE_URL', '/sample/rvm-viewer/');
+    try {
+      const rpc = createRpc();
+      installRpc(rpc);
+      const { getRvmRpc } = await import('../src/viewer/rvmSdk.js');
+      await getRvmRpc();
+      expect(window.RvmRpc).toHaveBeenCalledWith({
+        workerUrl: '/sample/rvm-viewer/rvmsdk/rvm-worker.js',
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('allows retrying after the SDK script was unavailable', async () => {

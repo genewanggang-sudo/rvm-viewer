@@ -1,40 +1,43 @@
 # AIDT 天赋包
 
-这个目录只保留可复现的天赋源码：`SKILL.md` 和 `scripts/pack_thin_html.mjs`。已生成的 ZIP 不属于源码，统一放在根目录被忽略的 `tmp/`。
+这里保存可复现的天赋源码：`SKILL.md` 和单 RVM 薄 HTML 生成脚本。任何 ZIP、模型、
+截图或发布产物都应留在根 `tmp/`，不进入 Git。
+
+## 当前平台入口
+
+本项目智能体为「RVM 模型查看器」，ID `cr36T4`，唯一启用天赋 `rvm-viewer-v3`。
+普通聊天：<https://www.czy3d.com/aidt/chat?agent_id=cr36T4>。
+配置页：<https://www.czy3d.com/aidt/agents/cr36T4/configure>。
+上传一个 `.rvm` 后发送“请加载并显示我上传的 RVM 文件”，在对话中打开返回的 HTML。
+已登录用户、`qwen3.8-max` 和同源 viewer 的普通聊天链路已真实验证；智能体未公开发布。
+
+「RVT联调测试-测完删」（`iSQtvy`）是旧 OBJ/STL/RVT 联调项，不是本项目入口。
 
 ## 生成发布包
 
-先确定前端将发布到的 HTTPS URL，在仓库中运行：
+先部署或预留一个 HTTPS viewer 地址，然后运行：
 
 ```powershell
 Set-Location frontend
 corepack pnpm@10.12.1 prepare:aidt -- --viewer-url https://viewer.example.com/
 ```
 
-命令会在 `tmp/aidt-release/<timestamp>/` 生成：
+`tmp/aidt-release/<timestamp>/` 中的 `viewer/` 用于静态部署，`agent/` 是已写入真实
+viewer 地址的天赋包副本，`manifest.json` 记录文件 SHA-256。
 
-- `viewer/`：部署到该 HTTPS 静态站的构建产物；
-- `agent/`：已经写入该 viewer URL 的天赋源码副本；
-- `manifest.json`：文件清单和 SHA-256 校验值。
-
-压缩生成目录中的 `agent/` 后上传到 AIDT。源码中的 `DEFAULT_VIEWER_URL` 占位符不会被改写，因此不会把环境地址或临时发布物提交到 Git。
-
-## 本地联调
+## 本地检查
 
 ```powershell
-Set-Location frontend
-corepack pnpm@10.12.1 dev
-
-node ../agent/scripts/pack_thin_html.mjs `
-  --input C:\path\to\model.obj `
-  --output ..\tmp\thin.html `
+node scripts/pack_thin_html.mjs `
+  --file-ref "media/demo.rvm" `
+  --output ..\tmp\rvm-shell.html `
   --viewer-url http://127.0.0.1:5173/
 ```
 
-打开 `tmp/thin.html` 可验证 OBJ/STL 的 payload 或 postMessage 路径。RVM `--file-ref` 依赖 AIDT 的预览页、文件服务和登录态，不能以本地文件方式等价验证。
+薄页不会携带模型字节。优先使用平台注入的 `document.baseURI`；缺少 base 时，
+从父页面 `/agents/<id>/...` 或聊天的 `agent_id` 查询参数推导工作区文件接口。
+它读取部署的 viewer 入口，以嵌套
+srcdoc 启动并注入文件查询参数、正确的 Worker 部署目录，兼容当前线上旧包。
 
-## 文件引用模式
-
-对 `.rvm`（可选 `.att`）使用 `--file-ref "media/<uuid>_model.rvm"`。生成的薄 HTML 在预览页中将相对 `media/` 路径根据 `document.baseURI` 解析为绝对平台文件 URL，再附加到 viewer iframe。该动作避免外部静态 viewer 将路径误解析到自身域名。
-
-真正的 AIDT E2E 仍要验证外部 viewer 是否获准跨域携带登录态读取该绝对 URL；见根 README 的风险说明。
+当前验证环境为 AIDT 与 viewer 同源（`www.czy3d.com`）。真实验收必须在平台登录态
+执行；不同域名的部署还需要验证入口 CORS、Worker 同源限制和平台文件 Cookie 权限。
