@@ -6,6 +6,7 @@ export const MSG = {
 
 export const URL_PARAMS = {
   FILE: 'file',
+  ATTRS: 'attrs',
   NAME: 'name',
   EMBED: 'embed',
 } as const;

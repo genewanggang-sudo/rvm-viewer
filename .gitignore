@@ -6,5 +6,7 @@ frontend/coverage/
 .env
 .env.*
 !.env.example
+!frontend/.env.development
+!frontend/.env.production
 *.local
 *.rar

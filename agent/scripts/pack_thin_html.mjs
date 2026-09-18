@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// 为 AIDT 工作区中的单个 .rvm 文件生成薄 HTML 交付件。
+// 为 AIDT 工作区中的 .rvm 和可选属性文件生成薄 HTML 交付件。
 // 模型字节不进入 HTML；预览页将 media/... 相对路径解析为平台文件绝对 URL，
 // 再交给 HTTPS viewer 的 RVM Worker/WASM 加载。
 
@@ -17,10 +17,12 @@ function parseArgs(argv) {
   const args = {};
   for (let index = 2; index < argv.length; index += 1) {
     const key = argv[index];
-    if (!['--file-ref', '--name', '--output', '--viewer-url'].includes(key)) fail(`未知参数：${key}`);
+    if (!['--file-ref', '--attrs-ref', '--name', '--output', '--viewer-url'].includes(key))
+      fail(`未知参数：${key}`);
     const value = argv[++index];
     if (!value) fail(`${key} 缺少值`);
     if (key === '--file-ref') args.fileRef = value;
+    if (key === '--attrs-ref') args.attrsRef = value;
     if (key === '--name') args.name = value;
     if (key === '--output') args.output = value;
     if (key === '--viewer-url') args.viewerUrl = value;
@@ -37,6 +39,7 @@ html,body{margin:0;height:100%;background:#101418;color:#dfe7ee;font:13px/1.5 sy
 #st{flex:1;color:#8fa3b5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}#st.ok{color:#59c98d}#st.bad{color:#e06c5a}
 #retry{display:none;border:1px solid #3d4a57;background:#1b232b;color:#dfe7ee;border-radius:6px;padding:3px 12px;cursor:pointer}
 #frame{position:fixed;inset:34px 0 0;width:100%;height:calc(100% - 34px);border:0;background:#101418}
+body.viewer-ready #bar{display:none}body.viewer-ready #frame{inset:0;height:100%}
 </style></head><body>
 <div id="bar"><span id="st">正在连接 RVM 查看器…</span><button id="retry" type="button">重试</button></div>
 <iframe id="frame" src="about:blank" title="RVM 查看器" allow="fullscreen"></iframe>
@@ -46,6 +49,7 @@ html,body{margin:0;height:100%;background:#101418;color:#dfe7ee;font:13px/1.5 sy
  var VIEWER_URL = __VIEWER_URL__;
  var VIEWER_ORIGIN = "__VIEWER_ORIGIN__";
  var FILE_REF = __FILE_REF__;
+ var ATTRS_REF = __ATTRS_REF__;
  var NAME = __NAME__;
  var frame = document.getElementById('frame');
  var status = document.getElementById('st');
@@ -58,8 +62,8 @@ html,body{margin:0;height:100%;background:#101418;color:#dfe7ee;font:13px/1.5 sy
      return ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[character];
    });
  }
- function resolveFileUrl(){
-   var direct = new URL(FILE_REF, document.baseURI);
+ function resolveFileUrl(fileRef){
+   var direct = new URL(fileRef, document.baseURI);
    if (direct.pathname.indexOf('/aidt2.1_api/api/v1/files/preview/') === 0) return direct.href;
    try {
      // AIDT srcdoc 有时没有注入 <base>。此时从配置页路径或普通聊天 query 的 agent id
@@ -67,10 +71,10 @@ html,body{margin:0;height:100%;background:#101418;color:#dfe7ee;font:13px/1.5 sy
      var hostPage = new URL(window.top.location.href);
      var match = hostPage.pathname.match(new RegExp('/agents/([^/]+)'));
      var agentId = match ? match[1] : hostPage.searchParams.get('agent_id');
-     if (agentId && /^[a-zA-Z0-9_-]+$/.test(agentId) && FILE_REF.indexOf('media/') === 0) {
+     if (agentId && /^[a-zA-Z0-9_-]+$/.test(agentId) && fileRef.indexOf('media/') === 0) {
        return new URL(
          '/aidt2.1_api/api/v1/files/preview/app/working/workspaces/' +
-           encodeURIComponent(agentId) + '/' + FILE_REF,
+           encodeURIComponent(agentId) + '/' + fileRef,
          hostPage.origin
        ).href;
      }
@@ -80,10 +84,12 @@ html,body{margin:0;height:100%;background:#101418;color:#dfe7ee;font:13px/1.5 sy
  async function load(){
    // 相对 media 路径必须在 AIDT srcdoc 预览页中解析，不能让外部 viewer 按自身域名解析。
    var viewer = new URL(VIEWER_URL);
-   viewer.searchParams.set('file', resolveFileUrl());
+   viewer.searchParams.set('file', resolveFileUrl(FILE_REF));
+   if (ATTRS_REF) viewer.searchParams.set('attrs', resolveFileUrl(ATTRS_REF));
    viewer.searchParams.set('name', NAME);
    viewer.searchParams.set('embed', '1');
    done = false;
+   document.body.classList.remove('viewer-ready');
    retry.style.display = 'none';
    setStatus('正在加载 RVM 文件…');
    frame.removeAttribute('src');
@@ -130,7 +136,7 @@ html,body{margin:0;height:100%;background:#101418;color:#dfe7ee;font:13px/1.5 sy
    if (!message || message.v !== 1 || message.type !== 'rvm-viewer:rendered') return;
    done = true;
    clearTimeout(timer);
-   setStatus('RVM 已加载（顶点 ' + message.vertices + ' · 三角面 ' + message.triangles + '）', 'ok');
+   document.body.classList.add('viewer-ready');
  });
  load();
 })();
@@ -138,7 +144,7 @@ html,body{margin:0;height:100%;background:#101418;color:#dfe7ee;font:13px/1.5 sy
 
 const args = parseArgs(process.argv);
 if (!args.fileRef || !args.output) {
-  fail('用法：node pack_thin_html.mjs --file-ref "media/<uuid>_model.rvm" --output <html> [--name <显示名>] [--viewer-url <url>]');
+  fail('用法：node pack_thin_html.mjs --file-ref "media/<uuid>_model.rvm" [--attrs-ref "media/<uuid>_model.txt"] --output <html> [--name <显示名>] [--viewer-url <url>]');
 }
 
 const viewerUrl = (args.viewerUrl || process.env.RVM_VIEWER_URL || DEFAULT_VIEWER_URL).replace(/\\/g, '/');
@@ -148,13 +154,27 @@ try {
 } catch {
   fail(`viewer-url 无效：${viewerUrl}`);
 }
+if (viewer.username || viewer.password || viewer.hash) {
+  fail('viewer-url 不得包含用户名、密码或 fragment。');
+}
 if (viewer.protocol !== 'https:' && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(viewer.origin)) {
   fail('viewer-url 必须是 HTTPS；仅允许 http://127.0.0.1 或 http://localhost 用于本地联调。');
+}
+if (viewer.hostname.toLowerCase() === 'replace-with-your-viewer-host') {
+  fail('viewer-url 仍是占位地址；请先生成已配置的发布包或显式传入 --viewer-url。');
 }
 
 const fileRef = args.fileRef.replace(/\\/g, '/').replace(/^\.?\//, '');
 if (!/^[\w.\-/ %()（）\u4e00-\u9fa5]+$/.test(fileRef) || !fileRef.toLowerCase().endsWith('.rvm')) {
   fail(`file-ref 必须是安全的 .rvm 相对路径，收到：${fileRef}`);
+}
+
+const attrsRef = args.attrsRef?.replace(/\\/g, '/').replace(/^\.?\//, '') ?? null;
+if (
+  attrsRef &&
+  (!/^[\w.\-/ %()（）\u4e00-\u9fa5]+$/.test(attrsRef) || !/\.(att|attrib|txt)$/i.test(attrsRef))
+) {
+  fail(`attrs-ref 必须是安全的 .att、.attrib 或 .txt 相对路径，收到：${attrsRef}`);
 }
 
 const name = (args.name || path.basename(fileRef)).replace(/[<>&"']/g, '');
@@ -165,6 +185,7 @@ const html = THIN_HTML
   .replace('__VIEWER_URL__', JSON.stringify(viewer.href))
   .replace('__VIEWER_ORIGIN__', viewer.origin)
   .replace('__FILE_REF__', JSON.stringify(fileRef))
+  .replace('__ATTRS_REF__', JSON.stringify(attrsRef))
   .replace('__NAME__', JSON.stringify(name));
 fs.writeFileSync(output, html);
 console.log(
@@ -173,6 +194,7 @@ console.log(
     mode: 'rvm-fileref',
     name,
     fileRef,
+    attrsRef,
     output,
     viewerUrl: viewer.href,
     htmlBytes: Buffer.byteLength(html),

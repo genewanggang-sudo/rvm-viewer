@@ -3,6 +3,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { RenderStats } from '../protocol.js';
 
 const BACKGROUND_COLOR = 0x101418;
+const DEFAULT_MODEL_COLOR = 0xb9c7d1;
 const ISOMETRIC_DIRECTION = new THREE.Vector3(1.45, 1.1, 1.45).normalize();
 
 interface CameraFrame {
@@ -16,6 +17,7 @@ export class ViewerEngine {
   private readonly camera = new THREE.PerspectiveCamera(45, 1, 0.01, 100);
   private readonly controls: OrbitControls;
   private readonly resizeHandler: () => void;
+  private readonly resizeObserver: ResizeObserver;
   private activeObject: THREE.Object3D | null = null;
   private frameId = 0;
   private disposed = false;
@@ -23,6 +25,9 @@ export class ViewerEngine {
   constructor(private readonly canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     this.renderer.setClearColor(BACKGROUND_COLOR, 1);
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.15;
     this.camera.position.set(1.6, 1.1, 1.9);
 
     this.controls = new OrbitControls(this.camera, canvas);
@@ -30,12 +35,17 @@ export class ViewerEngine {
     this.controls.dampingFactor = 0.08;
     this.controls.enablePan = true;
 
-    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x223344, 1.1));
-    const keyLight = new THREE.DirectionalLight(0xffffff, 1.6);
+    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x516477, 1.55));
+    const keyLight = new THREE.DirectionalLight(0xffffff, 2.1);
     keyLight.position.set(3, 5, 4);
     this.scene.add(keyLight);
+    const fillLight = new THREE.DirectionalLight(0xb8d0e5, 0.85);
+    fillLight.position.set(-4, 2, -3);
+    this.scene.add(fillLight);
 
     this.resizeHandler = () => this.resize();
+    this.resizeObserver = new ResizeObserver(this.resizeHandler);
+    this.resizeObserver.observe(canvas);
     window.addEventListener('resize', this.resizeHandler);
     this.resize();
     this.resetCamera();
@@ -44,6 +54,7 @@ export class ViewerEngine {
 
   setObject3D(object: THREE.Object3D): RenderStats {
     this.clear();
+    applyDefaultDisplayMaterials(object);
 
     const box = new THREE.Box3().setFromObject(object);
     const hasGeometryBounds = !box.isEmpty();
@@ -83,6 +94,7 @@ export class ViewerEngine {
     this.disposed = true;
     cancelAnimationFrame(this.frameId);
     window.removeEventListener('resize', this.resizeHandler);
+    this.resizeObserver.disconnect();
     this.clear();
     this.controls.dispose();
     this.renderer.dispose();
@@ -157,4 +169,61 @@ function disposeObjectResources(object: THREE.Object3D): void {
 
 function isRenderableMesh(node: THREE.Object3D): node is THREE.Mesh {
   return (node as THREE.Object3D & { isMesh?: boolean }).isMesh === true;
+}
+
+function applyDefaultDisplayMaterials(object: THREE.Object3D): void {
+  const clones = new Map<THREE.Material, THREE.Material>();
+
+  object.traverse((node) => {
+    if (!isRenderableMesh(node)) return;
+    const hasVertexColors = node.geometry.getAttribute('color') !== undefined;
+    const materials = Array.isArray(node.material) ? node.material : [node.material];
+    const displayMaterials = materials.map((material) => {
+      if (!needsDefaultColor(material, hasVertexColors)) return material;
+      const existing = clones.get(material);
+      if (existing) return existing;
+
+      const clone = material.clone();
+      setMaterialColor(clone, DEFAULT_MODEL_COLOR);
+      clones.set(material, clone);
+      return clone;
+    });
+    node.material = Array.isArray(node.material) ? displayMaterials : displayMaterials[0];
+  });
+
+  if (clones.size === 0) return;
+  const attachedMaterials = new Set<THREE.Material>();
+  object.traverse((node) => {
+    if (!isRenderableMesh(node)) return;
+    for (const material of Array.isArray(node.material) ? node.material : [node.material]) {
+      attachedMaterials.add(material);
+    }
+  });
+  for (const source of clones.keys()) {
+    if (!attachedMaterials.has(source)) source.dispose();
+  }
+}
+
+function needsDefaultColor(material: THREE.Material, hasVertexColors: boolean): boolean {
+  if (hasVertexColors) return false;
+  const candidate = material as THREE.Material & {
+    color?: THREE.Color;
+    map?: THREE.Texture | null;
+  };
+  if (!candidate.color || candidate.map) return false;
+  // The preview exporter uses neutral gray for RVM nodes without an explicit
+  // material color. Keep authored chromatic colors intact.
+  return candidate.color.getHex() === 0xffffff || candidate.color.getHex() === 0xa9a9a9;
+}
+
+function setMaterialColor(material: THREE.Material, color: number): void {
+  const candidate = material as THREE.Material & {
+    color?: THREE.Color;
+    roughness?: number;
+    metalness?: number;
+  };
+  candidate.color?.setHex(color);
+  if ('roughness' in candidate && typeof candidate.roughness === 'number') candidate.roughness = 0.78;
+  if ('metalness' in candidate && typeof candidate.metalness === 'number') candidate.metalness = 0.05;
+  material.needsUpdate = true;
 }

@@ -58,7 +58,42 @@ describe('RVM file channel', () => {
     expect(fetch).toHaveBeenCalledWith('/workspace/模型.rvm', { credentials: 'include' });
     expect(target.onStatus).toHaveBeenNthCalledWith(1, CHANNEL.FILE, 'loading');
     expect(target.onStatus).toHaveBeenNthCalledWith(2, CHANNEL.FILE, 'parsing');
-    expect(target.onRvmFile).toHaveBeenCalledWith({ bytes: bytes('RVM'), name: 'plant.rvm' });
+    expect(target.onRvmFile).toHaveBeenCalledWith({
+      bytes: bytes('RVM'),
+      name: '模型.rvm',
+      displayName: 'plant.rvm',
+    });
+  });
+
+  it('fetches and forwards a supported attribute file with the RVM', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/?file=/workspace/model.rvm&attrs=/workspace/model.attrib&name=plant.rvm'
+    );
+    const model = bytes('RVM');
+    const attrs = bytes('ATTRS');
+    const fetch = vi.fn().mockResolvedValueOnce(response(model)).mockResolvedValueOnce(response(attrs));
+    vi.stubGlobal('fetch', fetch);
+    const target = handlers();
+    initDataChannels(target);
+    await nextTask();
+
+    expect(fetch).toHaveBeenNthCalledWith(1, '/workspace/model.rvm', { credentials: 'include' });
+    expect(fetch).toHaveBeenNthCalledWith(2, '/workspace/model.attrib', { credentials: 'include' });
+    expect(target.onRvmFile).toHaveBeenCalledWith({
+      bytes: model,
+      name: 'model.rvm',
+      displayName: 'plant.rvm',
+      attrs,
+    });
+  });
+
+  it('rejects unsupported attributes before fetching', () => {
+    window.history.replaceState({}, '', '/?file=/workspace/model.rvm&attrs=/workspace/model.csv');
+    const target = handlers();
+    initDataChannels(target);
+    expect(target.onError).toHaveBeenCalledWith('属性文件仅支持 .att、.attrib 或 .txt，收到：model.csv');
   });
 
   it('accepts a display name without an extension when the file URL is an RVM', async () => {
@@ -73,7 +108,11 @@ describe('RVM file channel', () => {
     await nextTask();
 
     expect(target.onError).not.toHaveBeenCalled();
-    expect(target.onRvmFile).toHaveBeenCalledWith({ bytes: bytes('RVM'), name: '工厂模型' });
+    expect(target.onRvmFile).toHaveBeenCalledWith({
+      bytes: bytes('RVM'),
+      name: 'model.rvm',
+      displayName: '工厂模型',
+    });
   });
 
   it('derives a name from an absolute URL and reports unsupported parser results', async () => {
@@ -93,6 +132,26 @@ describe('RVM file channel', () => {
     initDataChannels(target);
     await nextTask();
     expect(target.onRvmFile).toHaveBeenCalledWith({ bytes: bytes('RVM'), name: 'model.rvm' });
+  });
+
+  it('stops URL channel callbacks after cleanup', async () => {
+    window.history.replaceState({}, '', '/?file=/workspace/model.rvm');
+    let resolveFetch!: (value: Response) => void;
+    const fetch = vi.fn().mockReturnValue(
+      new Promise<Response>((resolve) => {
+        resolveFetch = resolve;
+      })
+    );
+    vi.stubGlobal('fetch', fetch);
+    const target = handlers();
+    const cleanup = initDataChannels(target);
+    cleanup();
+    resolveFetch(response(bytes('RVM')));
+    await nextTask();
+
+    expect(target.onStatus).not.toHaveBeenCalledWith(CHANNEL.FILE, 'parsing');
+    expect(target.onRvmFile).not.toHaveBeenCalled();
+    expect(target.onError).not.toHaveBeenCalled();
   });
 
   it('reports HTTP, fetch, parser, and malformed URL failures', async () => {
@@ -126,5 +185,18 @@ describe('RVM file channel', () => {
       bytes: bytes('RVM'),
       name: 'http://[invalid/model.rvm',
     });
+
+    window.history.replaceState({}, '', '/?file=/workspace/model.rvm&attrs=/workspace/missing.txt');
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(response(bytes('RVM')))
+        .mockResolvedValueOnce(response(new ArrayBuffer(0), 403))
+    );
+    const attrs = handlers();
+    initDataChannels(attrs);
+    await nextTask();
+    expect(attrs.onError).toHaveBeenCalledWith(expect.stringContaining('属性 HTTP 403'));
   });
 });

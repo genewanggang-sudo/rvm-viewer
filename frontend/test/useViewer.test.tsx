@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DataChannelHandlers } from '../src/channels/dataChannels.js';
 import { CHANNEL, MSG, PROTOCOL_VERSION } from '../src/protocol.js';
 import type { ViewerController } from '../src/hooks/useViewer.js';
+import type { RvmModelSession, RvmTreeNode } from '../src/viewer/rvmSdk.js';
 
 const mocks = vi.hoisted(() => ({
   handlers: undefined as unknown,
@@ -83,10 +84,51 @@ function fakeFile(name: string): File {
   return { name, size: 3, arrayBuffer: async () => new ArrayBuffer(3) } as unknown as File;
 }
 
-function importedModel(name = 'plant.rvm') {
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason: unknown) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+const child: RvmTreeNode = {
+  name: 'child',
+  path: '/plant/child',
+  segments: ['plant', 'child'],
+  visible: true,
+  excluded: false,
+  entityCount: 1,
+  propertyCount: 1,
+  children: [],
+};
+
+const tree: RvmTreeNode = {
+  name: 'plant',
+  path: '/plant',
+  segments: ['plant'],
+  visible: true,
+  excluded: false,
+  entityCount: 2,
+  propertyCount: 1,
+  children: [child],
+};
+
+function importedModel(name = 'plant.rvm', overrides: Partial<RvmModelSession> = {}): RvmModelSession {
   return {
     object: new THREE.Group(),
     meta: { sourceFile: name, sourceFormat: 'RVM', nodeCount: 2, entityCount: 4, attributeNodeCount: 0 },
+    tree,
+    attributeStats: { loaded: true, attached: 2, missed: 1 },
+    getProperties: vi.fn().mockResolvedValue([{ name: 'Tag', value: 'P-101' }]),
+    close: vi.fn().mockResolvedValue(undefined),
+    ...overrides,
   };
 }
 
@@ -152,6 +194,10 @@ describe('useViewer', () => {
     });
     expect(current().ui).toMatchObject({ phase: 'loaded', source: CHANNEL.FILE, name: 'plant.rvm' });
     expect(current().ui.detail).toContain('节点 2');
+    expect(current().tree).toBe(tree);
+    expect(current().selectedNode).toBe(tree);
+    expect(current().properties).toEqual([{ name: 'Tag', value: 'P-101' }]);
+    expect(current().attributeStats).toEqual({ loaded: true, attached: 2, missed: 1 });
     expect(parent.postMessage).toHaveBeenCalledWith(
       { v: PROTOCOL_VERSION, type: MSG.RENDERED, name: 'plant.rvm', vertices: 9, triangles: 3 },
       '*'
@@ -175,7 +221,11 @@ describe('useViewer', () => {
     await act(async () => {
       await current().loadLocalRvm(fakeFile('local.rvm'));
     });
-    expect(mocks.readLocalRvm).toHaveBeenCalledWith(expect.objectContaining({ name: 'local.rvm' }), 1024);
+    expect(mocks.readLocalRvm).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'local.rvm' }),
+      1024,
+      undefined
+    );
     expect(current().ui).toMatchObject({ source: CHANNEL.LOCAL, phase: 'loaded' });
 
     mocks.readLocalRvm.mockRejectedValueOnce(new Error('文件过大'));
@@ -189,6 +239,104 @@ describe('useViewer', () => {
     });
   });
 
+  it('forwards local attributes and replaces the previous model session', async () => {
+    const first = importedModel('first.rvm');
+    const second = importedModel('second.rvm');
+    const attrs = new ArrayBuffer(5);
+    mocks.readLocalRvm
+      .mockResolvedValueOnce({ bytes: new ArrayBuffer(4), name: 'first.rvm' })
+      .mockResolvedValueOnce({ bytes: new ArrayBuffer(6), name: 'second.rvm', attrs });
+    mocks.importRvmModel.mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+    render(<Harness />);
+
+    await act(async () => {
+      await current().loadLocalRvm(fakeFile('first.rvm'));
+      await current().loadLocalRvm(fakeFile('second.rvm'), fakeFile('second.txt'));
+    });
+    expect(mocks.readLocalRvm).toHaveBeenLastCalledWith(
+      expect.objectContaining({ name: 'second.rvm' }),
+      1024,
+      expect.objectContaining({ name: 'second.txt' })
+    );
+    expect(mocks.importRvmModel).toHaveBeenLastCalledWith(
+      expect.any(ArrayBuffer),
+      'second.rvm',
+      expect.objectContaining({ attrs })
+    );
+    expect(first.close).toHaveBeenCalledOnce();
+    expect(current().ui.name).toBe('second.rvm');
+  });
+
+  it('loads properties for tree selections and reports query errors', async () => {
+    const session = importedModel();
+    vi.mocked(session.getProperties)
+      .mockResolvedValueOnce([{ name: 'Root', value: 'yes' }])
+      .mockResolvedValueOnce([{ name: 'Tag', value: 'child' }])
+      .mockRejectedValueOnce('not available');
+    mocks.importRvmModel.mockResolvedValueOnce(session);
+    render(<Harness />);
+    await act(async () => {
+      await handlers().onRvmFile({ bytes: new ArrayBuffer(3), name: 'plant.rvm' });
+    });
+
+    await act(async () => {
+      await current().selectNode(child);
+    });
+    expect(session.getProperties).toHaveBeenLastCalledWith(['plant', 'child']);
+    expect(current().properties).toEqual([{ name: 'Tag', value: 'child' }]);
+    expect(current().propertyPhase).toBe('loaded');
+
+    await act(async () => {
+      await current().selectNode(tree);
+    });
+    expect(current().propertyPhase).toBe('error');
+    expect(current().propertyError).toBe('节点属性读取失败：not available');
+  });
+
+  it('ignores stale successful and failed property requests', async () => {
+    const rootRequest = deferred<Array<{ name: string; value: string }>>();
+    const childRequest = deferred<Array<{ name: string; value: string }>>();
+    const staleFailure = deferred<Array<{ name: string; value: string }>>();
+    const latestRequest = deferred<Array<{ name: string; value: string }>>();
+    const session = importedModel();
+    vi.mocked(session.getProperties)
+      .mockImplementationOnce(() => rootRequest.promise)
+      .mockImplementationOnce(() => childRequest.promise)
+      .mockImplementationOnce(() => staleFailure.promise)
+      .mockImplementationOnce(() => latestRequest.promise);
+    mocks.importRvmModel.mockResolvedValueOnce(session);
+    render(<Harness />);
+
+    await act(async () => {
+      await handlers().onRvmFile({ bytes: new ArrayBuffer(3), name: 'plant.rvm' });
+    });
+    const childSelection = current().selectNode(child);
+    await act(async () => {
+      rootRequest.resolve([{ name: 'stale', value: 'root' }]);
+      await rootRequest.promise;
+    });
+    expect(current().selectedNode).toBe(child);
+    expect(current().properties).toEqual([]);
+    await act(async () => {
+      childRequest.resolve([{ name: 'Tag', value: 'child' }]);
+      await childSelection;
+    });
+    expect(current().properties).toEqual([{ name: 'Tag', value: 'child' }]);
+
+    const failedSelection = current().selectNode(tree);
+    const latestSelection = current().selectNode(child);
+    await act(async () => {
+      staleFailure.reject(new Error('stale failure'));
+      await failedSelection;
+    });
+    expect(current().propertyPhase).toBe('loading');
+    await act(async () => {
+      latestRequest.resolve([{ name: 'Latest', value: 'yes' }]);
+      await latestSelection;
+    });
+    expect(current().properties).toEqual([{ name: 'Latest', value: 'yes' }]);
+  });
+
   it('loads the development test RVM and handles test fetch failures', async () => {
     mocks.importRvmModel.mockResolvedValueOnce(importedModel('WD1-PSUP.RVM'));
     vi.stubGlobal(
@@ -200,6 +348,7 @@ describe('useViewer', () => {
       await current().loadTestRvm();
     });
     expect(fetch).toHaveBeenCalledWith('/__rvm-testdata/WD1-PSUP.RVM');
+    expect(fetch).toHaveBeenCalledWith('/__rvm-testdata/WD1-PSUP.txt');
     expect(current().ui).toMatchObject({ source: CHANNEL.TEST, phase: 'loaded' });
 
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 404 }));
@@ -209,12 +358,25 @@ describe('useViewer', () => {
     expect(current().ui).toMatchObject({
       source: CHANNEL.TEST,
       phase: 'error',
-      error: '测试 RVM 加载失败：HTTP 404',
+      error: '测试 RVM 加载失败：RVM HTTP 404',
     });
+
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce({ ok: true, arrayBuffer: async () => new ArrayBuffer(2) })
+        .mockResolvedValueOnce({ ok: false, status: 403 })
+    );
+    await act(async () => {
+      await current().loadTestRvm();
+    });
+    expect(current().ui.error).toBe('测试 RVM 加载失败：属性 HTTP 403');
   });
 
   it('forwards camera commands to the active engine', () => {
     render(<Harness />);
+    void current().selectNode(tree);
     current().frameCamera();
     current().resetCamera();
     expect(mocks.engineFrameModel).toHaveBeenCalledOnce();
@@ -255,6 +417,22 @@ describe('useViewer', () => {
       await expect(pending).resolves.toBe(false);
     });
     expect(mocks.engineSetObject).not.toHaveBeenCalled();
+  });
+
+  it('closes a candidate session when installing it fails', async () => {
+    const session = importedModel('broken.rvm');
+    mocks.importRvmModel.mockResolvedValueOnce(session);
+    mocks.engineSetObject.mockImplementationOnce(() => {
+      throw new Error('renderer failed');
+    });
+    render(<Harness />);
+    await act(async () => {
+      await expect(handlers().onRvmFile({ bytes: new ArrayBuffer(3), name: 'broken.rvm' })).resolves.toBe(
+        false
+      );
+    });
+    expect(session.close).toHaveBeenCalledOnce();
+    expect(current().ui.error).toBe('RVM 解析失败：renderer failed');
   });
 
   it('does not initialize an engine when no canvas is mounted', () => {

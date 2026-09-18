@@ -1,6 +1,6 @@
 # AIDT 天赋包
 
-这里保存可复现的天赋源码：`SKILL.md` 和单 RVM 薄 HTML 生成脚本。任何 ZIP、模型、
+这里保存可复现的天赋源码：`SKILL.md` 和 RVM + 可选属性文件的薄 HTML 生成脚本。任何 ZIP、模型、
 截图或发布产物都应留在根 `tmp/`，不进入 Git。
 
 ## 当前平台入口
@@ -8,7 +8,8 @@
 本项目智能体为「RVM 模型查看器」，ID `cr36T4`，唯一启用天赋 `rvm-viewer-v3`。
 普通聊天：<https://www.czy3d.com/aidt/chat?agent_id=cr36T4>。
 配置页：<https://www.czy3d.com/aidt/agents/cr36T4/configure>。
-上传一个 `.rvm` 后发送“请加载并显示我上传的 RVM 文件”，在对话中打开返回的 HTML。
+上传一个 `.rvm`，可同时上传 `.att`、`.attrib` 或 `.txt` 属性文件；发送“请加载并显示我上传的
+RVM 文件”，在对话中打开返回的 HTML。
 已登录用户、`qwen3.8-max` 和同源 viewer 的普通聊天链路已真实验证；智能体未公开发布。
 
 「RVT联调测试-测完删」（`iSQtvy`）是旧 OBJ/STL/RVT 联调项，不是本项目入口。
@@ -30,6 +31,7 @@ viewer 地址的天赋包副本，`manifest.json` 记录文件 SHA-256。
 ```powershell
 node scripts/pack_thin_html.mjs `
   --file-ref "media/demo.rvm" `
+  --attrs-ref "media/demo.txt" `
   --output ..\tmp\rvm-shell.html `
   --viewer-url http://127.0.0.1:5173/
 ```
@@ -38,6 +40,8 @@ node scripts/pack_thin_html.mjs `
 从父页面 `/agents/<id>/...` 或聊天的 `agent_id` 查询参数推导工作区文件接口。
 它读取部署的 viewer 入口，以嵌套
 srcdoc 启动并注入文件查询参数、正确的 Worker 部署目录，兼容当前线上旧包。
+薄页顶部状态条只显示连接、读取和启动错误；收到 viewer 的可信渲染成功回执后会自动
+收起并让 iframe 占满页面。此后显示的是 viewer 自身的状态栏、模型信息和相机工具。
 
 当前验证环境为 AIDT 与 viewer 同源（`www.czy3d.com`）。真实验收必须在平台登录态
 执行；不同域名的部署还需要验证入口 CORS、Worker 同源限制和平台文件 Cookie 权限。

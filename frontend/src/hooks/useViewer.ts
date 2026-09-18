@@ -10,13 +10,21 @@ import {
   type RenderStats,
 } from '../protocol.js';
 import { readLocalRvm } from '../viewer/localModel.js';
-import { importRvmModel } from '../viewer/rvmSdk.js';
+import {
+  importRvmModel,
+  type RvmAttributeStats,
+  type RvmModelSession,
+  type RvmProperty,
+  type RvmTreeNode,
+} from '../viewer/rvmSdk.js';
 import { ViewerEngine } from '../viewer/ViewerEngine.js';
 
 const TEST_RVM_URL = '/__rvm-testdata/WD1-PSUP.RVM';
+const TEST_ATTRIBUTES_URL = '/__rvm-testdata/WD1-PSUP.txt';
 const TEST_RVM_NAME = 'WD1-PSUP.RVM';
 
 export type ViewerPhase = 'idle' | 'loading' | 'parsing' | 'loaded' | 'error';
+export type PropertyPhase = 'idle' | 'loading' | 'loaded' | 'error';
 
 export interface ViewerUiState {
   phase: ViewerPhase;
@@ -32,8 +40,15 @@ export interface ViewerUiState {
 export interface ViewerController {
   canvasRef: React.RefObject<HTMLCanvasElement>;
   ui: ViewerUiState;
-  loadLocalRvm: (model: File) => Promise<void>;
+  tree: RvmTreeNode | null;
+  selectedNode: RvmTreeNode | null;
+  properties: RvmProperty[];
+  propertyPhase: PropertyPhase;
+  propertyError: string | null;
+  attributeStats: RvmAttributeStats | null;
+  loadLocalRvm: (model: File, attributes?: File) => Promise<void>;
   loadTestRvm: () => Promise<void>;
+  selectNode: (node: RvmTreeNode) => Promise<void>;
   frameCamera: () => void;
   resetCamera: () => void;
 }
@@ -52,32 +67,89 @@ const INITIAL_UI: ViewerUiState = {
 export function useViewer(maxLocalFileBytes: number): ViewerController {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<ViewerEngine | null>(null);
+  const sessionRef = useRef<RvmModelSession | null>(null);
+  const loadRequestRef = useRef(0);
+  const propertyRequestRef = useRef(0);
   const [ui, setUi] = useState<ViewerUiState>(INITIAL_UI);
+  const [tree, setTree] = useState<RvmTreeNode | null>(null);
+  const [selectedNode, setSelectedNode] = useState<RvmTreeNode | null>(null);
+  const [properties, setProperties] = useState<RvmProperty[]>([]);
+  const [propertyPhase, setPropertyPhase] = useState<PropertyPhase>('idle');
+  const [propertyError, setPropertyError] = useState<string | null>(null);
+  const [attributeStats, setAttributeStats] = useState<RvmAttributeStats | null>(null);
+
+  const readProperties = useCallback(async (session: RvmModelSession, node: RvmTreeNode): Promise<void> => {
+    const request = ++propertyRequestRef.current;
+    setSelectedNode(node);
+    setProperties([]);
+    setPropertyPhase('loading');
+    setPropertyError(null);
+    try {
+      const result = await session.getProperties(node.segments);
+      if (sessionRef.current !== session || propertyRequestRef.current !== request) return;
+      setProperties(result);
+      setPropertyPhase('loaded');
+    } catch (error) {
+      if (sessionRef.current !== session || propertyRequestRef.current !== request) return;
+      setPropertyPhase('error');
+      setPropertyError(`节点属性读取失败：${errorMessage(error)}`);
+    }
+  }, []);
+
+  const selectNode = useCallback(
+    async (node: RvmTreeNode): Promise<void> => {
+      const session = sessionRef.current;
+      if (!session) return;
+      await readProperties(session, node);
+    },
+    [readProperties]
+  );
 
   const renderRvm = useCallback(
-    async (engine: ViewerEngine, bytes: ArrayBuffer, name: string, source: DataChannel): Promise<boolean> => {
+    async (
+      engine: ViewerEngine,
+      bytes: ArrayBuffer,
+      name: string,
+      source: DataChannel,
+      attrs?: ArrayBuffer,
+      displayName?: string
+    ): Promise<boolean> => {
+      const request = ++loadRequestRef.current;
+      let session: RvmModelSession | null = null;
       try {
-        const { object, meta } = await importRvmModel(bytes, name, {
+        session = await importRvmModel(bytes, name, {
+          attrs,
+          displayName,
           onProgress: (message) =>
             setUi((state) => ({ ...state, source, phase: 'parsing', detail: message })),
         });
-        if (engineRef.current !== engine) return false;
+        if (engineRef.current !== engine || loadRequestRef.current !== request) {
+          await session.close();
+          return false;
+        }
 
-        const stats = engine.setObject3D(object);
+        const stats = engine.setObject3D(session.object);
+        const previous = sessionRef.current;
+        sessionRef.current = session;
+        setTree(session.tree);
+        setAttributeStats(session.attributeStats);
         setUi({
           phase: 'loaded',
           source,
-          name: meta.sourceFile,
-          format: meta.sourceFormat,
+          name: session.meta.sourceFile,
+          format: session.meta.sourceFormat,
           vertices: stats.vertices,
           triangles: stats.triangles,
-          detail: `节点 ${meta.nodeCount.toLocaleString()} · 实体 ${meta.entityCount.toLocaleString()} · 属性 ${meta.attributeNodeCount.toLocaleString()}`,
+          detail: `节点 ${session.meta.nodeCount.toLocaleString()} · 实体 ${session.meta.entityCount.toLocaleString()} · 属性 ${session.meta.attributeNodeCount.toLocaleString()}`,
           error: null,
         });
-        announceRendered(meta.sourceFile, stats);
+        void previous?.close();
+        void readProperties(session, session.tree);
+        announceRendered(session.meta.sourceFile, stats);
         return true;
       } catch (error) {
-        if (engineRef.current === engine) {
+        if (session && sessionRef.current !== session) await session.close();
+        if (engineRef.current === engine && loadRequestRef.current === request) {
           setUi((state) => ({
             ...state,
             source,
@@ -88,7 +160,7 @@ export function useViewer(maxLocalFileBytes: number): ViewerController {
         return false;
       }
     },
-    []
+    [readProperties]
   );
 
   useEffect(() => {
@@ -98,7 +170,8 @@ export function useViewer(maxLocalFileBytes: number): ViewerController {
     const engine = new ViewerEngine(canvas);
     engineRef.current = engine;
     const cleanup = initDataChannels({
-      onRvmFile: ({ bytes, name }) => renderRvm(engine, bytes, name, CHANNEL.FILE),
+      onRvmFile: ({ bytes, name, displayName, attrs }) =>
+        renderRvm(engine, bytes, name, CHANNEL.FILE, attrs, displayName),
       onStatus: (source, status) => {
         setUi((state) => ({ ...state, source, phase: mapPhase(status), detail: null, error: null }));
       },
@@ -107,21 +180,26 @@ export function useViewer(maxLocalFileBytes: number): ViewerController {
 
     return () => {
       cleanup();
+      loadRequestRef.current += 1;
+      propertyRequestRef.current += 1;
       if (engineRef.current === engine) engineRef.current = null;
+      const session = sessionRef.current;
+      sessionRef.current = null;
+      void session?.close();
       engine.dispose();
     };
   }, [renderRvm]);
 
   const loadLocalRvm = useCallback(
-    async (model: File): Promise<void> => {
+    async (model: File, attributes?: File): Promise<void> => {
       const engine = engineRef.current;
       if (!engine) return;
 
       setUi((state) => ({ ...state, source: CHANNEL.LOCAL, phase: 'loading', detail: null, error: null }));
       try {
-        const rvm = await readLocalRvm(model, maxLocalFileBytes);
+        const rvm = await readLocalRvm(model, maxLocalFileBytes, attributes);
         if (engineRef.current !== engine) return;
-        await renderRvm(engine, rvm.bytes, rvm.name, CHANNEL.LOCAL);
+        await renderRvm(engine, rvm.bytes, rvm.name, CHANNEL.LOCAL, rvm.attrs);
       } catch (error) {
         if (engineRef.current === engine) {
           setUi((state) => ({
@@ -142,9 +220,17 @@ export function useViewer(maxLocalFileBytes: number): ViewerController {
 
     setUi((state) => ({ ...state, source: CHANNEL.TEST, phase: 'loading', detail: null, error: null }));
     try {
-      const response = await fetch(TEST_RVM_URL);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      await renderRvm(engine, await response.arrayBuffer(), TEST_RVM_NAME, CHANNEL.TEST);
+      const [modelResponse, attributesResponse] = await Promise.all([
+        fetch(TEST_RVM_URL),
+        fetch(TEST_ATTRIBUTES_URL),
+      ]);
+      if (!modelResponse.ok) throw new Error(`RVM HTTP ${modelResponse.status}`);
+      if (!attributesResponse.ok) throw new Error(`属性 HTTP ${attributesResponse.status}`);
+      const [bytes, attrs] = await Promise.all([
+        modelResponse.arrayBuffer(),
+        attributesResponse.arrayBuffer(),
+      ]);
+      await renderRvm(engine, bytes, TEST_RVM_NAME, CHANNEL.TEST, attrs);
     } catch (error) {
       if (engineRef.current === engine) {
         setUi((state) => ({
@@ -160,7 +246,21 @@ export function useViewer(maxLocalFileBytes: number): ViewerController {
   const frameCamera = useCallback(() => engineRef.current?.frameModel(), []);
   const resetCamera = useCallback(() => engineRef.current?.resetCamera(), []);
 
-  return { canvasRef, ui, loadLocalRvm, loadTestRvm, frameCamera, resetCamera };
+  return {
+    canvasRef,
+    ui,
+    tree,
+    selectedNode,
+    properties,
+    propertyPhase,
+    propertyError,
+    attributeStats,
+    loadLocalRvm,
+    loadTestRvm,
+    selectNode,
+    frameCamera,
+    resetCamera,
+  };
 }
 
 function mapPhase(status: ChannelStatus): ViewerPhase {
