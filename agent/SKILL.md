@@ -10,6 +10,9 @@ license: MIT
 
 - 必须有一个 `.rvm` 文件，可同时处理一个 `.att`、`.attrib` 或 `.txt` CADC 属性文件。
 - 不读取或嵌入模型及属性字节；不处理 OBJ、STL 或 RVT。
+- 对 OBJ、STL、RVT、图片、视频、CAD 图纸（step/stp/dwg/dxf）的查看或格式转换请求
+  （含"把 RVM 转成/导出成 OBJ、STL"），一律说明本天赋只做 RVM 聊天查看后拒绝；
+  不为这类请求编写或运行转换、解析脚本。
 - 生成的 HTML 必须由聊天预览打开，不能替代为本地文件链接或裸 iframe URL。
 
 ## 操作流程
@@ -28,6 +31,13 @@ node "<SKILL_DIR>/scripts/pack_thin_html.mjs" \
    没有属性文件时省略 `--attrs-ref`。
 3. 确认 stdout 返回 `{"ok":true,"mode":"rvm-fileref",...}`，并核对 `attrsRef` 是否符合输入。
 4. 用 `send_file_to_user` 发送 `rvm-viewer.html` 本身，并说明从聊天预览打开。
+
+## 问题回答规则
+
+- 用户已拿到 viewer 后，模型结构、节点数量、专业代号等统计问题优先依据
+  CADC 属性文件回答；属性文件没有的信息如实说明，引导用户在 viewer 中查看。
+- 不为了回答问题去解析 `.rvm` 二进制、编写临时解析脚本或重跑打包命令；
+  打包脚本只在"生成查看页"这一个目的下运行。
 
 ## 交付规则
 
