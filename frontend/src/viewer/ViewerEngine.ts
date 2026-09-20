@@ -4,11 +4,20 @@ import type { RenderStats } from '../protocol.js';
 
 const BACKGROUND_COLOR = 0x101418;
 const DEFAULT_MODEL_COLOR = 0xb9c7d1;
+const HIGHLIGHT_COLOR = 0xffa43d;
 const ISOMETRIC_DIRECTION = new THREE.Vector3(1.45, 1.1, 1.45).normalize();
+const PICK_SLOP_PIXELS = 4;
 
 interface CameraFrame {
   target: THREE.Vector3;
   distance: number;
+}
+
+export type ScenePickHandler = (object: THREE.Object3D | null) => void;
+
+interface HighlightSwap {
+  mesh: THREE.Mesh;
+  material: THREE.Material | THREE.Material[];
 }
 
 export class ViewerEngine {
@@ -18,6 +27,22 @@ export class ViewerEngine {
   private readonly controls: OrbitControls;
   private readonly resizeHandler: () => void;
   private readonly resizeObserver: ResizeObserver;
+  private readonly raycaster = new THREE.Raycaster();
+  private readonly highlightMaterial = new THREE.MeshStandardMaterial({
+    color: HIGHLIGHT_COLOR,
+    emissive: HIGHLIGHT_COLOR,
+    emissiveIntensity: 0.55,
+    roughness: 0.6,
+    metalness: 0.05,
+    transparent: true,
+    opacity: 0.92,
+  });
+  private readonly pointerDownHandler: (event: PointerEvent) => void;
+  private readonly pointerUpHandler: (event: PointerEvent) => void;
+  private readonly pointerLeaveHandler: () => void;
+  private highlightSwaps: HighlightSwap[] = [];
+  private selectionHandler: ScenePickHandler | null = null;
+  private pointerDownPosition: { x: number; y: number } | null = null;
   private activeObject: THREE.Object3D | null = null;
   private frameId = 0;
   private disposed = false;
@@ -47,12 +72,63 @@ export class ViewerEngine {
     this.resizeObserver = new ResizeObserver(this.resizeHandler);
     this.resizeObserver.observe(canvas);
     window.addEventListener('resize', this.resizeHandler);
+
+    this.pointerDownHandler = (event) => {
+      if (event.button !== 0) return;
+      this.pointerDownPosition = { x: event.clientX, y: event.clientY };
+    };
+    this.pointerUpHandler = (event) => {
+      const down = this.pointerDownPosition;
+      this.pointerDownPosition = null;
+      if (!down || !this.selectionHandler || event.button !== 0) return;
+      if (Math.hypot(event.clientX - down.x, event.clientY - down.y) > PICK_SLOP_PIXELS) return;
+      const bounds = canvas.getBoundingClientRect();
+      if (bounds.width === 0 || bounds.height === 0) return;
+      const ndcX = ((event.clientX - bounds.left) / bounds.width) * 2 - 1;
+      const ndcY = -((event.clientY - bounds.top) / bounds.height) * 2 + 1;
+      this.selectionHandler(this.pickAt(ndcX, ndcY));
+    };
+    this.pointerLeaveHandler = () => {
+      this.pointerDownPosition = null;
+    };
+    canvas.addEventListener('pointerdown', this.pointerDownHandler);
+    canvas.addEventListener('pointerup', this.pointerUpHandler);
+    canvas.addEventListener('pointerleave', this.pointerLeaveHandler);
+
     this.resize();
     this.resetCamera();
     this.renderLoop();
   }
 
+  setSelectionHandler(handler: ScenePickHandler | null): void {
+    this.selectionHandler = handler;
+  }
+
+  /** 选中子树高亮：整体换用共享高亮材质，原材质记录在案以便还原。 */
+  setHighlighted(object: THREE.Object3D | null): void {
+    this.restoreHighlight();
+    if (!object) return;
+    object.traverse((node) => {
+      if (!isRenderableMesh(node)) return;
+      this.highlightSwaps.push({ mesh: node, material: node.material });
+      node.material = this.highlightMaterial;
+    });
+  }
+
+  setSubtreeVisible(object: THREE.Object3D, visible: boolean): void {
+    object.visible = visible;
+  }
+
+  /** 相机对准子树包围盒（保持当前视角方向）；包围盒为空时不动。 */
+  frameObject(object: THREE.Object3D): void {
+    const box = new THREE.Box3().setFromObject(object);
+    if (box.isEmpty()) return;
+    const direction = this.camera.position.clone().sub(this.controls.target);
+    this.applyCameraFrame(this.frameFor(box), direction.lengthSq() > 0 ? direction : ISOMETRIC_DIRECTION);
+  }
+
   setObject3D(object: THREE.Object3D): RenderStats {
+    this.setHighlighted(null);
     this.clear();
     applyDefaultDisplayMaterials(object);
 
@@ -84,6 +160,7 @@ export class ViewerEngine {
 
   clear(): void {
     if (!this.activeObject) return;
+    this.setHighlighted(null);
     this.scene.remove(this.activeObject);
     disposeObjectResources(this.activeObject);
     this.activeObject = null;
@@ -95,9 +172,14 @@ export class ViewerEngine {
     cancelAnimationFrame(this.frameId);
     window.removeEventListener('resize', this.resizeHandler);
     this.resizeObserver.disconnect();
+    this.setSelectionHandler(null);
+    this.canvas.removeEventListener('pointerdown', this.pointerDownHandler);
+    this.canvas.removeEventListener('pointerup', this.pointerUpHandler);
+    this.canvas.removeEventListener('pointerleave', this.pointerLeaveHandler);
     this.clear();
     this.controls.dispose();
     this.renderer.dispose();
+    this.highlightMaterial.dispose();
   }
 
   private resize(): void {
@@ -113,11 +195,30 @@ export class ViewerEngine {
     const box = new THREE.Box3();
     if (this.activeObject) box.setFromObject(this.activeObject);
     if (box.isEmpty()) return { target: new THREE.Vector3(), distance: 3 };
+    return this.frameFor(box);
+  }
 
+  private frameFor(box: THREE.Box3): CameraFrame {
     const sphere = box.getBoundingSphere(new THREE.Sphere());
     const verticalDistance = sphere.radius / Math.sin(THREE.MathUtils.degToRad(this.camera.fov) / 2);
     const horizontalDistance = verticalDistance / Math.max(this.camera.aspect, 0.75);
     return { target: sphere.center, distance: Math.max(verticalDistance, horizontalDistance, 1) * 1.24 };
+  }
+
+  private pickAt(ndcX: number, ndcY: number): THREE.Object3D | null {
+    if (!this.activeObject) return null;
+    this.raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.camera);
+    for (const hit of this.raycaster.intersectObject(this.activeObject, true)) {
+      if (isEffectivelyVisible(hit.object)) return hit.object;
+    }
+    return null;
+  }
+
+  private restoreHighlight(): void {
+    for (const { mesh, material } of this.highlightSwaps) {
+      mesh.material = material;
+    }
+    this.highlightSwaps = [];
   }
 
   private applyCameraFrame(frame: CameraFrame, direction: THREE.Vector3): void {
@@ -169,6 +270,15 @@ function disposeObjectResources(object: THREE.Object3D): void {
 
 function isRenderableMesh(node: THREE.Object3D): node is THREE.Mesh {
   return (node as THREE.Object3D & { isMesh?: boolean }).isMesh === true;
+}
+
+function isEffectivelyVisible(object: THREE.Object3D): boolean {
+  let current: THREE.Object3D | null = object;
+  while (current) {
+    if (!current.visible) return false;
+    current = current.parent;
+  }
+  return true;
 }
 
 function applyDefaultDisplayMaterials(object: THREE.Object3D): void {

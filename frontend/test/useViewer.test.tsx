@@ -16,6 +16,10 @@ const mocks = vi.hoisted(() => ({
   engineSetObject: vi.fn(),
   engineFrameModel: vi.fn(),
   engineResetCamera: vi.fn(),
+  engineSetHighlighted: vi.fn(),
+  engineFrameObject: vi.fn(),
+  engineSetSubtreeVisible: vi.fn(),
+  engineSelectionHandler: null as ((object: THREE.Object3D | null) => void) | null,
   objectResult: { vertices: 9, triangles: 3 },
   importRvmModel: vi.fn(),
   readLocalRvm: vi.fn(),
@@ -44,6 +48,19 @@ vi.mock('../src/viewer/ViewerEngine.js', () => ({
     resetCamera(): void {
       mocks.engineResetCamera();
     }
+    setHighlighted(object: THREE.Object3D | null): void {
+      mocks.engineSetHighlighted(object);
+    }
+    frameObject(object: THREE.Object3D): void {
+      mocks.engineFrameObject(object);
+    }
+    setSubtreeVisible(object: THREE.Object3D, visible: boolean): void {
+      object.visible = visible;
+      mocks.engineSetSubtreeVisible(object, visible);
+    }
+    setSelectionHandler(handler: (object: THREE.Object3D | null) => void | null): void {
+      mocks.engineSelectionHandler = handler;
+    }
     dispose(): void {
       mocks.engineDispose();
     }
@@ -66,7 +83,10 @@ function Harness(): React.JSX.Element {
 }
 
 function NoCanvasHarness(): React.JSX.Element {
-  useViewer(1024);
+  const value = useViewer(1024);
+  useEffect(() => {
+    controller = value;
+  });
   return <div />;
 }
 
@@ -119,12 +139,33 @@ const tree: RvmTreeNode = {
 };
 
 function importedModel(name = 'plant.rvm', overrides: Partial<RvmModelSession> = {}): RvmModelSession {
+  const rootObject = new THREE.Group();
+  const childObject = new THREE.Group();
+  rootObject.add(childObject);
+  const nodeToObject = new Map<RvmTreeNode, THREE.Object3D>([
+    [tree, rootObject],
+    [child, childObject],
+  ]);
+  const objectToNode = new Map<THREE.Object3D, RvmTreeNode>([
+    [rootObject, tree],
+    [childObject, child],
+  ]);
   return {
-    object: new THREE.Group(),
+    object: rootObject,
     meta: { sourceFile: name, sourceFormat: 'RVM', nodeCount: 2, entityCount: 4, attributeNodeCount: 0 },
     tree,
     attributeStats: { loaded: true, attached: 2, missed: 1 },
     getProperties: vi.fn().mockResolvedValue([{ name: 'Tag', value: 'P-101' }]),
+    resolveObject: vi.fn((node: RvmTreeNode) => nodeToObject.get(node) ?? null),
+    resolveNode: vi.fn((object: THREE.Object3D) => {
+      let current: THREE.Object3D | null = object;
+      while (current) {
+        const mapped = objectToNode.get(current);
+        if (mapped) return mapped;
+        current = current.parent;
+      }
+      return null;
+    }),
     close: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
@@ -139,6 +180,10 @@ beforeEach(() => {
   mocks.engineSetObject.mockReset();
   mocks.engineFrameModel.mockReset();
   mocks.engineResetCamera.mockReset();
+  mocks.engineSetHighlighted.mockReset();
+  mocks.engineFrameObject.mockReset();
+  mocks.engineSetSubtreeVisible.mockReset();
+  mocks.engineSelectionHandler = null;
   mocks.importRvmModel.mockReset();
   mocks.readLocalRvm.mockReset();
   mocks.objectResult = { vertices: 9, triangles: 3 };
@@ -381,6 +426,221 @@ describe('useViewer', () => {
     expect(mocks.engineResetCamera).toHaveBeenCalledOnce();
   });
 
+  it('highlights the selected subtree but skips the whole-model root', async () => {
+    const session = importedModel();
+    mocks.importRvmModel.mockResolvedValueOnce(session);
+    render(<Harness />);
+    await act(async () => {
+      await handlers().onRvmFile({ bytes: new ArrayBuffer(3), name: 'plant.rvm' });
+    });
+    expect(mocks.engineSetHighlighted).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await current().selectNode(child);
+    });
+    expect(mocks.engineSetHighlighted).toHaveBeenCalledWith(session.resolveObject(child));
+
+    await act(async () => {
+      await current().selectNode(tree);
+    });
+    expect(mocks.engineSetHighlighted).toHaveBeenLastCalledWith(null);
+  });
+
+  it('locates a node by framing its subtree and frames the model for the root', async () => {
+    const session = importedModel();
+    mocks.importRvmModel.mockResolvedValueOnce(session);
+    render(<Harness />);
+    await act(async () => {
+      await handlers().onRvmFile({ bytes: new ArrayBuffer(3), name: 'plant.rvm' });
+    });
+    const childObject = session.resolveObject(child);
+
+    // After load the root is auto-selected: the toolbar command frames the model.
+    act(() => current().locateSelected());
+    expect(mocks.engineFrameModel).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      await current().selectNode(child);
+    });
+    act(() => current().locateSelected());
+    expect(mocks.engineFrameObject).toHaveBeenCalledWith(childObject);
+
+    act(() => current().clearSelection());
+    act(() => current().locateSelected());
+    expect(mocks.engineFrameObject).toHaveBeenCalledOnce();
+
+    current().locateNode(child);
+    expect(mocks.engineFrameObject).toHaveBeenLastCalledWith(childObject);
+
+    current().locateNode(tree);
+    expect(mocks.engineFrameModel).toHaveBeenLastCalledWith();
+    expect(mocks.engineFrameModel).toHaveBeenCalledTimes(2);
+  });
+
+  it('toggles subtree visibility and tracks hidden keys locally', async () => {
+    const session = importedModel();
+    mocks.importRvmModel.mockResolvedValueOnce(session);
+    render(<Harness />);
+    await act(async () => {
+      await handlers().onRvmFile({ bytes: new ArrayBuffer(3), name: 'plant.rvm' });
+    });
+    const childObject = session.resolveObject(child);
+
+    act(() => current().toggleNodeVisible(child, '0/0'));
+    expect(mocks.engineSetSubtreeVisible).toHaveBeenLastCalledWith(childObject, false);
+    expect(current().hiddenKeys).toEqual(new Set(['0/0']));
+
+    act(() => current().toggleNodeVisible(child, '0/0'));
+    expect(mocks.engineSetSubtreeVisible).toHaveBeenLastCalledWith(childObject, true);
+    expect(current().hiddenKeys).toEqual(new Set());
+  });
+
+  it('isolates the branch containing a node and restores all branches', async () => {
+    const branchA: RvmTreeNode = {
+      name: 'A',
+      segments: ['plant', 'A'],
+      visible: true,
+      excluded: false,
+      entityCount: 1,
+      propertyCount: 0,
+      children: [],
+    };
+    const branchB: RvmTreeNode = {
+      name: 'B',
+      segments: ['plant', 'B'],
+      visible: true,
+      excluded: false,
+      entityCount: 1,
+      propertyCount: 0,
+      children: [],
+    };
+    const branchC: RvmTreeNode = {
+      name: 'C',
+      segments: ['plant', 'C'],
+      visible: true,
+      excluded: false,
+      entityCount: 1,
+      propertyCount: 0,
+      children: [],
+    };
+    const wideTree: RvmTreeNode = {
+      name: 'plant',
+      segments: ['plant'],
+      visible: true,
+      excluded: false,
+      entityCount: 3,
+      propertyCount: 0,
+      children: [branchA, branchB, branchC],
+    };
+    const rootObject = new THREE.Group();
+    const objectA = new THREE.Group();
+    const objectB = new THREE.Group();
+    rootObject.add(objectA, objectB); // branchC has no scene mapping
+    const nodeToObject = new Map<RvmTreeNode, THREE.Object3D>([
+      [wideTree, rootObject],
+      [branchA, objectA],
+      [branchB, objectB],
+    ]);
+    const session = importedModel('wide.rvm', {
+      tree: wideTree,
+      resolveObject: (node: RvmTreeNode) => nodeToObject.get(node) ?? null,
+    });
+    mocks.importRvmModel.mockResolvedValueOnce(session);
+    render(<Harness />);
+    await act(async () => {
+      await handlers().onRvmFile({ bytes: new ArrayBuffer(3), name: 'wide.rvm' });
+    });
+
+    act(() => current().isolateNode(branchB));
+    expect(mocks.engineSetSubtreeVisible).toHaveBeenCalledWith(objectA, false);
+    expect(mocks.engineSetSubtreeVisible).toHaveBeenCalledWith(objectB, true);
+    // branchC 没有场景映射，无法控制显隐，跳过且不进入隐藏集合。
+    expect(current().hiddenKeys).toEqual(new Set(['0/0']));
+    expect(mocks.engineFrameObject).toHaveBeenLastCalledWith(objectB);
+
+    act(() => current().resetVisibility());
+    expect(mocks.engineSetSubtreeVisible).toHaveBeenCalledWith(objectA, true);
+    expect(mocks.engineSetSubtreeVisible).toHaveBeenCalledWith(objectB, true);
+    expect(current().hiddenKeys).toEqual(new Set());
+
+    act(() => current().isolateNode(wideTree));
+    expect(mocks.engineFrameModel).toHaveBeenCalledOnce();
+    expect(mocks.engineSetSubtreeVisible).toHaveBeenLastCalledWith(objectB, true);
+
+    // Isolating a node outside the tree is a no-op.
+    act(() => current().isolateNode({ ...branchB }));
+    expect(mocks.engineFrameModel).toHaveBeenCalledOnce();
+
+    // Unmapped nodes cannot be toggled, and isolating one skips the camera fit.
+    act(() => current().toggleNodeVisible({ ...branchB }, '9/9'));
+    expect(current().hiddenKeys).toEqual(new Set());
+    act(() => current().isolateNode(branchC));
+    expect(mocks.engineFrameObject).toHaveBeenLastCalledWith(objectB);
+    expect(current().hiddenKeys).toEqual(new Set(['0/0', '0/1']));
+  });
+
+  it('ignores scene picks and visibility work before a model is loaded', () => {
+    render(<Harness />);
+    const pick = mocks.engineSelectionHandler;
+    if (!pick) throw new Error('selection handler was not installed');
+    act(() => {
+      pick(new THREE.Group());
+      current().isolateNode(tree);
+      current().resetVisibility();
+      current().toggleNodeVisible(tree, '0');
+      void current().selectNode(tree);
+      current().locateNode(tree);
+      current().locateSelected();
+    });
+    expect(current().selectedNode).toBeNull();
+    expect(mocks.engineSetSubtreeVisible).not.toHaveBeenCalled();
+    expect(mocks.engineSetHighlighted).not.toHaveBeenCalled();
+    expect(mocks.engineFrameObject).not.toHaveBeenCalled();
+  });
+
+  it('resets hidden branches when a new model is loaded', async () => {
+    const session = importedModel();
+    mocks.importRvmModel.mockResolvedValueOnce(session).mockResolvedValueOnce(importedModel('next.rvm'));
+    render(<Harness />);
+    await act(async () => {
+      await handlers().onRvmFile({ bytes: new ArrayBuffer(3), name: 'plant.rvm' });
+    });
+    act(() => current().toggleNodeVisible(child, '0/0'));
+    expect(current().hiddenKeys).not.toEqual(new Set());
+
+    await act(async () => {
+      await handlers().onRvmFile({ bytes: new ArrayBuffer(3), name: 'next.rvm' });
+    });
+    expect(current().hiddenKeys).toEqual(new Set());
+  });
+
+  it('selects tree nodes from scene picks and clears the selection on empty space', async () => {
+    const session = importedModel();
+    vi.mocked(session.getProperties).mockResolvedValue([{ name: 'Tag', value: 'picked' }]);
+    mocks.importRvmModel.mockResolvedValueOnce(session);
+    render(<Harness />);
+    await act(async () => {
+      await handlers().onRvmFile({ bytes: new ArrayBuffer(3), name: 'plant.rvm' });
+    });
+    expect(mocks.engineSelectionHandler).toBeTypeOf('function');
+
+    const pick = mocks.engineSelectionHandler;
+    if (!pick) throw new Error('selection handler was not installed');
+    await act(async () => {
+      pick(session.resolveObject(child));
+    });
+    expect(current().selectedNode).toBe(child);
+    expect(current().properties).toEqual([{ name: 'Tag', value: 'picked' }]);
+    expect(mocks.engineSetHighlighted).toHaveBeenLastCalledWith(session.resolveObject(child));
+
+    await act(async () => {
+      pick(null);
+    });
+    expect(current().selectedNode).toBeNull();
+    expect(current().propertyPhase).toBe('idle');
+    expect(mocks.engineSetHighlighted).toHaveBeenLastCalledWith(null);
+  });
+
   it('ignores work that completes after unmount and no-ops without an engine', async () => {
     let resolveRead: ((value: { bytes: ArrayBuffer; name: string }) => void) | undefined;
     mocks.readLocalRvm.mockReturnValueOnce(
@@ -433,8 +693,13 @@ describe('useViewer', () => {
     expect(current().ui.error).toBe('RVM 解析失败：renderer failed');
   });
 
-  it('does not initialize an engine when no canvas is mounted', () => {
+  it('does not initialize an engine when no canvas is mounted', async () => {
     render(<NoCanvasHarness />);
+    await act(async () => {
+      await current().selectNode(tree);
+      current().locateNode(tree);
+    });
     expect(mocks.initDataChannels).not.toHaveBeenCalled();
+    expect(current().selectedNode).toBeNull();
   });
 });

@@ -188,7 +188,7 @@ body,
   bottom: 16px;
   z-index: 4;
   display: grid;
-  grid-template-columns: repeat(2, 34px);
+  grid-template-columns: repeat(3, 34px);
   gap: 6px;
   padding: 6px;
   border: 1px solid var(--rv-border);
@@ -256,12 +256,106 @@ body,
   color: var(--rv-text-dim);
   cursor: pointer;
 }
+.rv-tree-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--rv-border);
+}
+.rv-tree-search input {
+  min-width: 0;
+  flex: 1;
+  height: 28px;
+  box-sizing: border-box;
+  padding: 0 8px;
+  border: 1px solid #4b5c67;
+  border-radius: 4px;
+  background: var(--rv-panel);
+  color: var(--rv-text);
+  font: inherit;
+  font-size: 12px;
+}
+.rv-tree-search input:focus {
+  outline: none;
+  border-color: var(--rv-accent);
+}
+.rv-tree-search button {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--rv-text-dim);
+  cursor: pointer;
+}
+.rv-tree-search button:hover {
+  background: #28353e;
+  color: var(--rv-text);
+}
+.rv-tree-search-results {
+  max-height: 180px;
+  overflow: auto;
+  border-bottom: 1px solid var(--rv-border);
+}
+.rv-tree-search-results button {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--rv-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.rv-tree-search-results button:hover {
+  background: #23303a;
+}
+.rv-tree-search-results button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rv-tree-search-results button small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--rv-text-dim);
+  font-size: 10px;
+}
 .rv-attribute-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   padding: 7px 10px;
   border-bottom: 1px solid var(--rv-border);
   color: var(--rv-text-dim);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
+}
+.rv-attribute-summary button {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border: 1px solid #4b5c67;
+  border-radius: 4px;
+  background: var(--rv-panel);
+  color: var(--rv-text);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.rv-attribute-summary button:hover {
+  border-color: var(--rv-accent);
+  background: #28353e;
 }
 .rv-tree-scroll,
 .rv-properties-scroll {
@@ -291,6 +385,38 @@ body,
 .rv-tree__row--selected {
   background: #3c3422;
   box-shadow: inset 3px 0 var(--rv-accent);
+}
+.rv-tree__row--hidden > .rv-tree__select {
+  opacity: 0.45;
+  text-decoration: line-through;
+  text-decoration-color: rgba(185, 199, 209, 0.5);
+}
+.rv-tree__tools {
+  flex: 0 0 auto;
+  display: none;
+  align-items: center;
+  gap: 2px;
+  padding-right: 6px;
+}
+.rv-tree__row:hover .rv-tree__tools,
+.rv-tree__row:focus-within .rv-tree__tools {
+  display: flex;
+}
+.rv-tree__tools button {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--rv-text-dim);
+  cursor: pointer;
+}
+.rv-tree__tools button:hover {
+  background: #2d3d49;
+  color: var(--rv-text);
 }
 .rv-tree__toggle,
 .rv-tree__select {

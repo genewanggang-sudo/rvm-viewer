@@ -1,13 +1,21 @@
-import { useState } from 'react';
-import { Boxes, ChevronDown, ChevronRight, X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Boxes, ChevronDown, ChevronRight, Crosshair, Eye, EyeOff, ScanEye, X } from 'lucide-react';
 import type { RvmAttributeStats, RvmTreeNode } from '../viewer/rvmSdk.js';
 import { rvmNodeDisplayPath } from '../viewer/rvmSdk.js';
+import { childKey, findIndexPath, indexPathKeys, TREE_ROOT_KEY } from '../viewer/treeUtils.js';
+
+const SEARCH_RESULT_LIMIT = 200;
 
 interface ModelExplorerProps {
   tree: RvmTreeNode;
   selectedNode: RvmTreeNode | null;
   attributeStats: RvmAttributeStats;
+  hiddenKeys: Set<string>;
   onSelect: (node: RvmTreeNode) => void;
+  onLocate: (node: RvmTreeNode) => void;
+  onToggleVisible: (node: RvmTreeNode, key: string) => void;
+  onIsolate: (node: RvmTreeNode) => void;
+  onResetVisibility: () => void;
   onClose: () => void;
   open: boolean;
 }
@@ -16,21 +24,64 @@ export function ModelExplorer({
   tree,
   selectedNode,
   attributeStats,
+  hiddenKeys,
   onSelect,
+  onLocate,
+  onToggleVisible,
+  onIsolate,
+  onResetVisibility,
   onClose,
   open,
 }: ModelExplorerProps): React.JSX.Element {
-  const [expanded, setExpanded] = useState(() => new Set([nodeKey(tree)]));
+  const [expanded, setExpanded] = useState(() => new Set([TREE_ROOT_KEY]));
+  const [query, setQuery] = useState('');
+  const rowRefs = useRef(new Map<string, HTMLDivElement>());
+  const pendingScrollKey = useRef<string | null>(null);
 
-  const toggle = (node: RvmTreeNode): void => {
-    const key = nodeKey(node);
+  const toggleExpanded = (key: string, next: boolean): void => {
     setExpanded((current) => {
-      const next = new Set(current);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
+      const nextSet = new Set(current);
+      if (next) nextSet.add(key);
+      else nextSet.delete(key);
+      return nextSet;
     });
   };
+
+  const expandKeys = (keys: string[]): void => {
+    setExpanded((current) => {
+      const next = new Set(current);
+      for (const key of keys) next.add(key);
+      return next.size === current.size ? current : next;
+    });
+  };
+
+  const locateFromSearch = (match: TreeSearchMatch): void => {
+    onSelect(match.node);
+    expandKeys(match.keys);
+    onLocate(match.node);
+  };
+
+  // 反向联动（三维点选）或外部状态变化时，展开祖先链并把选中行滚进可视区。
+  // 展开产生的行要等下一次渲染才挂载，滚动因此放到提交后的独立 effect 里。
+  useEffect(() => {
+    if (!selectedNode) return;
+    const path = findIndexPath(tree, selectedNode);
+    if (!path) return;
+    const keys = indexPathKeys(path);
+    pendingScrollKey.current = keys[keys.length - 1];
+    expandKeys(keys);
+  }, [tree, selectedNode]);
+
+  useEffect(() => {
+    const key = pendingScrollKey.current;
+    if (!key) return;
+    const row = rowRefs.current.get(key);
+    if (!row) return;
+    pendingScrollKey.current = null;
+    if (typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'nearest' });
+  });
+
+  const matches = useMemo(() => searchTree(tree, query), [tree, query]);
 
   return (
     <aside className={`rv-dock rv-dock--left${open ? ' rv-dock--open' : ''}`} aria-label="模型结构">
@@ -41,19 +92,69 @@ export function ModelExplorer({
           <X aria-hidden="true" size={17} />
         </button>
       </header>
+      <div className="rv-tree-search">
+        <input
+          type="search"
+          value={query}
+          placeholder="按名称查找节点"
+          aria-label="按名称查找节点"
+          onChange={(event) => setQuery(event.target.value)}
+        />
+        {query ? (
+          <button type="button" aria-label="清除查找" onClick={() => setQuery('')}>
+            <X aria-hidden="true" size={13} />
+          </button>
+        ) : null}
+      </div>
+      {query ? (
+        <div className="rv-tree-search-results" aria-label="查找结果">
+          {matches.length === 0 ? (
+            <div className="rv-panel-state">没有匹配的节点</div>
+          ) : (
+            matches.map((match) => (
+              <button
+                key={searchResultKey(match)}
+                type="button"
+                title={rvmNodeDisplayPath(match.node)}
+                onClick={() => locateFromSearch(match)}
+              >
+                <span>{match.node.name}</span>
+                <small>{rvmNodeDisplayPath(match.node)}</small>
+              </button>
+            ))
+          )}
+          {matches.length >= SEARCH_RESULT_LIMIT ? (
+            <div className="rv-panel-state">仅显示前 {SEARCH_RESULT_LIMIT} 条结果</div>
+          ) : null}
+        </div>
+      ) : null}
       <div className="rv-attribute-summary">
-        {attributeStats.loaded
-          ? `属性挂接 ${attributeStats.attached.toLocaleString()} · 未匹配 ${attributeStats.missed.toLocaleString()}`
-          : '未加载外部属性'}
+        <span>
+          {attributeStats.loaded
+            ? `属性挂接 ${attributeStats.attached.toLocaleString()} · 未匹配 ${attributeStats.missed.toLocaleString()}`
+            : '未加载外部属性'}
+        </span>
+        {hiddenKeys.size > 0 ? (
+          <button type="button" aria-label="恢复全部显示" onClick={onResetVisibility}>
+            恢复显示
+          </button>
+        ) : null}
       </div>
       <div className="rv-tree-scroll">
         <ul className="rv-tree" role="tree" aria-label="RVM 节点层级">
           <TreeItem
             node={tree}
+            nodeKey={TREE_ROOT_KEY}
+            parentHidden={false}
+            hiddenKeys={hiddenKeys}
             selectedNode={selectedNode}
             expanded={expanded}
+            rowRefs={rowRefs}
             onSelect={onSelect}
-            onToggle={toggle}
+            onLocate={onLocate}
+            onToggleExpanded={toggleExpanded}
+            onToggleVisible={onToggleVisible}
+            onIsolate={onIsolate}
           />
         </ul>
       </div>
@@ -63,26 +164,52 @@ export function ModelExplorer({
 
 interface TreeItemProps {
   node: RvmTreeNode;
+  nodeKey: string;
+  parentHidden: boolean;
+  hiddenKeys: Set<string>;
   selectedNode: RvmTreeNode | null;
   expanded: Set<string>;
+  rowRefs: React.MutableRefObject<Map<string, HTMLDivElement>>;
   onSelect: (node: RvmTreeNode) => void;
-  onToggle: (node: RvmTreeNode) => void;
+  onLocate: (node: RvmTreeNode) => void;
+  onToggleExpanded: (key: string, next: boolean) => void;
+  onToggleVisible: (node: RvmTreeNode, key: string) => void;
+  onIsolate: (node: RvmTreeNode) => void;
 }
 
-function TreeItem({ node, selectedNode, expanded, onSelect, onToggle }: TreeItemProps): React.JSX.Element {
+function TreeItem({
+  node,
+  nodeKey,
+  parentHidden,
+  hiddenKeys,
+  selectedNode,
+  expanded,
+  rowRefs,
+  onSelect,
+  onLocate,
+  onToggleExpanded,
+  onToggleVisible,
+  onIsolate,
+}: TreeItemProps): React.JSX.Element {
   const hasChildren = node.children.length > 0;
-  const isExpanded = expanded.has(nodeKey(node));
-  const isSelected = selectedNode ? nodeKey(selectedNode) === nodeKey(node) : false;
+  const isExpanded = expanded.has(nodeKey);
+  const isSelected = selectedNode === node;
+  const hidden = parentHidden || hiddenKeys.has(nodeKey);
+  const isolate = (): void => onIsolate(node);
+  const toggleVisible = (): void => onToggleVisible(node, nodeKey);
 
   return (
     <li role="treeitem" aria-expanded={hasChildren ? isExpanded : undefined} aria-selected={isSelected}>
-      <div className={`rv-tree__row${isSelected ? ' rv-tree__row--selected' : ''}`}>
+      <div
+        ref={rowRef(rowRefs, nodeKey)}
+        className={`rv-tree__row${isSelected ? ' rv-tree__row--selected' : ''}${hidden ? ' rv-tree__row--hidden' : ''}`}
+      >
         {hasChildren ? (
           <button
             className="rv-tree__toggle"
             type="button"
-            aria-label={`${isExpanded ? '收起' : '展开'} ${node.name}`}
-            onClick={() => onToggle(node)}
+            aria-label={`${isExpanded ? '收起' : '展开'} ${nodeDisplayName(node)}`}
+            onClick={() => onToggleExpanded(nodeKey, !isExpanded)}
           >
             {isExpanded ? (
               <ChevronDown aria-hidden="true" size={15} />
@@ -97,22 +224,63 @@ function TreeItem({ node, selectedNode, expanded, onSelect, onToggle }: TreeItem
           className="rv-tree__select"
           type="button"
           title={rvmNodeDisplayPath(node)}
-          onClick={() => onSelect(node)}
+          onClick={() => {
+            onSelect(node);
+            onToggleExpanded(nodeKey, true);
+          }}
+          onDoubleClick={() => {
+            onSelect(node);
+            onToggleExpanded(nodeKey, true);
+            onLocate(node);
+          }}
         >
           <span>{node.name || '(未命名节点)'}</span>
           {node.propertyCount > 0 ? <small>{node.propertyCount}</small> : null}
         </button>
+        <span className="rv-tree__tools">
+          <button
+            type="button"
+            aria-label={`隔离显示 ${nodeDisplayName(node)}`}
+            title="隔离显示"
+            onClick={isolate}
+          >
+            <ScanEye aria-hidden="true" size={14} />
+          </button>
+          <button
+            type="button"
+            aria-label={`${hidden ? '显示' : '隐藏'} ${nodeDisplayName(node)}`}
+            title={hidden ? '显示子树' : '隐藏子树'}
+            onClick={toggleVisible}
+          >
+            {hidden ? <EyeOff aria-hidden="true" size={14} /> : <Eye aria-hidden="true" size={14} />}
+          </button>
+          <button
+            type="button"
+            aria-label={`定位 ${nodeDisplayName(node)}`}
+            title="定位到三维模型"
+            onClick={() => onLocate(node)}
+          >
+            <Crosshair aria-hidden="true" size={14} />
+          </button>
+        </span>
       </div>
       {hasChildren && isExpanded ? (
         <ul role="group">
-          {node.children.map((child) => (
+          {node.children.map((child, index) => (
             <TreeItem
-              key={nodeKey(child)}
+              key={childKey(nodeKey, index)}
               node={child}
+              nodeKey={childKey(nodeKey, index)}
+              parentHidden={hidden}
+              hiddenKeys={hiddenKeys}
               selectedNode={selectedNode}
               expanded={expanded}
+              rowRefs={rowRefs}
               onSelect={onSelect}
-              onToggle={onToggle}
+              onLocate={onLocate}
+              onToggleExpanded={onToggleExpanded}
+              onToggleVisible={onToggleVisible}
+              onIsolate={onIsolate}
             />
           ))}
         </ul>
@@ -121,6 +289,41 @@ function TreeItem({ node, selectedNode, expanded, onSelect, onToggle }: TreeItem
   );
 }
 
-function nodeKey(node: RvmTreeNode): string {
-  return JSON.stringify(node.segments);
+function rowRef(
+  rowRefs: React.MutableRefObject<Map<string, HTMLDivElement>>,
+  key: string
+): (element: HTMLDivElement | null) => void {
+  return (element) => {
+    if (element) rowRefs.current.set(key, element);
+    else rowRefs.current.delete(key);
+  };
+}
+
+function nodeDisplayName(node: RvmTreeNode): string {
+  return node.name || '(未命名节点)';
+}
+
+interface TreeSearchMatch {
+  node: RvmTreeNode;
+  /** 从根到该节点的键链（含根键），点击结果时展开祖先链。 */
+  keys: string[];
+}
+
+function searchTree(tree: RvmTreeNode, query: string): TreeSearchMatch[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return [];
+  const results: TreeSearchMatch[] = [];
+  const walk = (node: RvmTreeNode, keys: string[]): void => {
+    if (results.length >= SEARCH_RESULT_LIMIT) return;
+    if ((node.name || '').toLowerCase().includes(needle)) results.push({ node, keys });
+    for (let index = 0; index < node.children.length; index += 1) {
+      walk(node.children[index], [...keys, childKey(keys[keys.length - 1], index)]);
+    }
+  };
+  walk(tree, [TREE_ROOT_KEY]);
+  return results;
+}
+
+function searchResultKey(match: TreeSearchMatch): string {
+  return `${match.keys.join('.')}-${match.node.propertyCount}`;
 }

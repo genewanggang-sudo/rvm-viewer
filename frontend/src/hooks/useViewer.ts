@@ -18,6 +18,7 @@ import {
   type RvmTreeNode,
 } from '../viewer/rvmSdk.js';
 import { ViewerEngine } from '../viewer/ViewerEngine.js';
+import { childKey, TREE_ROOT_KEY, findIndexPath } from '../viewer/treeUtils.js';
 
 const TEST_RVM_URL = '/__rvm-testdata/WD1-PSUP.RVM';
 const TEST_ATTRIBUTES_URL = '/__rvm-testdata/WD1-PSUP.txt';
@@ -46,9 +47,17 @@ export interface ViewerController {
   propertyPhase: PropertyPhase;
   propertyError: string | null;
   attributeStats: RvmAttributeStats | null;
+  /** 本地隐藏子树（树索引键），仅 three.js 显隐，不回写 wasm。 */
+  hiddenKeys: Set<string>;
   loadLocalRvm: (model: File, attributes?: File) => Promise<void>;
   loadTestRvm: () => Promise<void>;
   selectNode: (node: RvmTreeNode) => Promise<void>;
+  clearSelection: () => void;
+  locateNode: (node: RvmTreeNode) => void;
+  locateSelected: () => void;
+  toggleNodeVisible: (node: RvmTreeNode, key: string) => void;
+  isolateNode: (node: RvmTreeNode) => void;
+  resetVisibility: () => void;
   frameCamera: () => void;
   resetCamera: () => void;
 }
@@ -77,6 +86,19 @@ export function useViewer(maxLocalFileBytes: number): ViewerController {
   const [propertyPhase, setPropertyPhase] = useState<PropertyPhase>('idle');
   const [propertyError, setPropertyError] = useState<string | null>(null);
   const [attributeStats, setAttributeStats] = useState<RvmAttributeStats | null>(null);
+  const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(() => new Set());
+
+  /** 根节点代表整个模型，整棵高亮只会变成满屏橙色，按约定跳过。 */
+  const applySelectionHighlight = useCallback((node: RvmTreeNode): void => {
+    const engine = engineRef.current;
+    const session = sessionRef.current;
+    if (!engine || !session) return;
+    if (node === session.tree) {
+      engine.setHighlighted(null);
+      return;
+    }
+    engine.setHighlighted(session.resolveObject(node));
+  }, []);
 
   const readProperties = useCallback(async (session: RvmModelSession, node: RvmTreeNode): Promise<void> => {
     const request = ++propertyRequestRef.current;
@@ -98,12 +120,90 @@ export function useViewer(maxLocalFileBytes: number): ViewerController {
 
   const selectNode = useCallback(
     async (node: RvmTreeNode): Promise<void> => {
+      applySelectionHighlight(node);
       const session = sessionRef.current;
       if (!session) return;
       await readProperties(session, node);
     },
-    [readProperties]
+    [applySelectionHighlight, readProperties]
   );
+
+  const clearSelection = useCallback((): void => {
+    propertyRequestRef.current += 1;
+    setSelectedNode(null);
+    setProperties([]);
+    setPropertyPhase('idle');
+    setPropertyError(null);
+    engineRef.current?.setHighlighted(null);
+  }, []);
+
+  const locateNode = useCallback((node: RvmTreeNode): void => {
+    const session = sessionRef.current;
+    const engine = engineRef.current;
+    if (!session || !engine) return;
+    if (node === session.tree) {
+      engine.frameModel();
+      return;
+    }
+    const object = session.resolveObject(node);
+    if (object) engine.frameObject(object);
+  }, []);
+
+  /** 相机工具条的定位按钮：未选中节点时是安全的空操作。 */
+  const locateSelected = useCallback((): void => {
+    if (selectedNode) locateNode(selectedNode);
+  }, [selectedNode, locateNode]);
+
+  const toggleNodeVisible = useCallback((node: RvmTreeNode, key: string): void => {
+    const session = sessionRef.current;
+    const engine = engineRef.current;
+    if (!session || !engine) return;
+    const object = session.resolveObject(node);
+    if (!object) return;
+    const nextVisible = !object.visible;
+    engine.setSubtreeVisible(object, nextVisible);
+    setHiddenKeys((current) => {
+      const next = new Set(current);
+      if (nextVisible) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  /** 隔离：只保留包含该节点的一级分支，其余隐藏并定位到目标。 */
+  const isolateNode = useCallback((node: RvmTreeNode): void => {
+    const session = sessionRef.current;
+    const engine = engineRef.current;
+    if (!session || !engine) return;
+    if (node === session.tree) {
+      engine.frameModel();
+      return;
+    }
+    const path = findIndexPath(session.tree, node);
+    if (!path) return;
+    const hidden = new Set<string>();
+    session.tree.children.forEach((branch, index) => {
+      const object = session.resolveObject(branch);
+      if (!object) return;
+      const keep = index === path[0];
+      engine.setSubtreeVisible(object, keep);
+      if (!keep) hidden.add(childKey(TREE_ROOT_KEY, index));
+    });
+    setHiddenKeys(hidden);
+    const object = session.resolveObject(node);
+    if (object) engine.frameObject(object);
+  }, []);
+
+  const resetVisibility = useCallback((): void => {
+    const session = sessionRef.current;
+    const engine = engineRef.current;
+    if (!session || !engine) return;
+    for (const branch of session.tree.children) {
+      const object = session.resolveObject(branch);
+      if (object) engine.setSubtreeVisible(object, true);
+    }
+    setHiddenKeys(new Set());
+  }, []);
 
   const renderRvm = useCallback(
     async (
@@ -133,6 +233,7 @@ export function useViewer(maxLocalFileBytes: number): ViewerController {
         sessionRef.current = session;
         setTree(session.tree);
         setAttributeStats(session.attributeStats);
+        setHiddenKeys(new Set());
         setUi({
           phase: 'loaded',
           source,
@@ -169,6 +270,16 @@ export function useViewer(maxLocalFileBytes: number): ViewerController {
 
     const engine = new ViewerEngine(canvas);
     engineRef.current = engine;
+    engine.setSelectionHandler((object) => {
+      const session = sessionRef.current;
+      if (!session) return;
+      if (!object) {
+        clearSelection();
+        return;
+      }
+      const node = session.resolveNode(object);
+      if (node) void selectNode(node);
+    });
     const cleanup = initDataChannels({
       onRvmFile: ({ bytes, name, displayName, attrs }) =>
         renderRvm(engine, bytes, name, CHANNEL.FILE, attrs, displayName),
@@ -188,7 +299,7 @@ export function useViewer(maxLocalFileBytes: number): ViewerController {
       void session?.close();
       engine.dispose();
     };
-  }, [renderRvm]);
+  }, [renderRvm, selectNode, clearSelection]);
 
   const loadLocalRvm = useCallback(
     async (model: File, attributes?: File): Promise<void> => {
@@ -255,9 +366,16 @@ export function useViewer(maxLocalFileBytes: number): ViewerController {
     propertyPhase,
     propertyError,
     attributeStats,
+    hiddenKeys,
     loadLocalRvm,
     loadTestRvm,
     selectNode,
+    clearSelection,
+    locateNode,
+    locateSelected,
+    toggleNodeVisible,
+    isolateNode,
+    resetVisibility,
     frameCamera,
     resetCamera,
   };

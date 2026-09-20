@@ -244,4 +244,74 @@ describe('RVM SDK adapter', () => {
     await expect(importRvmModel(new ArrayBuffer(1), 'bad.rvm')).rejects.toThrow('invalid GLB');
     expect(rpc.call).toHaveBeenCalledWith('close', { handle: 'handle-1' });
   });
+
+  it('pairs the tree with the GLB scene by child order for tree-scene linkage', async () => {
+    const leaf: RvmTreeNode = { ...tree, name: 'M', segments: ['plant', 'A', 'M'], children: [] };
+    const branchA: RvmTreeNode = { ...tree, name: 'A', segments: ['plant', 'A'], children: [leaf] };
+    const branchB: RvmTreeNode = { ...tree, name: 'B', segments: ['plant', 'B'], children: [] };
+    const structuredTree: RvmTreeNode = { ...tree, children: [branchA, branchB] };
+    const meshInsideA = new THREE.Mesh(new THREE.BufferGeometry());
+
+    const scene = new THREE.Group();
+    const rootObject = new THREE.Group();
+    const objectA = new THREE.Group();
+    const objectB = new THREE.Group();
+    objectA.add(meshInsideA);
+    rootObject.add(objectA, objectB);
+    scene.add(rootObject);
+
+    const rpc = createRpc();
+    rpc.call.mockImplementation(async (operation: string) => {
+      if (operation === 'open') return openResult();
+      if (operation === 'preview') return new Uint8Array([1]);
+      if (operation === 'tree') return { root: structuredTree };
+      return undefined;
+    });
+    doubles.parseAsync.mockResolvedValue({ scene });
+    installRpc(rpc);
+    const { importRvmModel } = await import('../src/viewer/rvmSdk.js');
+
+    const session = await importRvmModel(new ArrayBuffer(1), 'linked.rvm');
+    expect(session.resolveObject(structuredTree)).toBe(rootObject);
+    expect(session.resolveObject(branchA)).toBe(objectA);
+    expect(session.resolveObject(branchB)).toBe(objectB);
+    expect(session.resolveObject(leaf)).toBe(meshInsideA);
+    expect(session.resolveObject({ ...branchA })).toBeNull();
+    expect(session.resolveNode(meshInsideA)).toBe(leaf);
+    expect(session.resolveNode(new THREE.Group())).toBeNull();
+    await session.close();
+  });
+
+  it('degrades gracefully when the GLB hierarchy diverges from the tree', async () => {
+    const branchA: RvmTreeNode = { ...tree, name: 'A', segments: ['plant', 'A'], children: [] };
+    const branchB: RvmTreeNode = { ...tree, name: 'B', segments: ['plant', 'B'], children: [] };
+    const structuredTree: RvmTreeNode = { ...tree, name: '', children: [branchA, branchB] };
+
+    const scene = new THREE.Group();
+    const rootObject = new THREE.Group();
+    const objectA = new THREE.Group();
+    rootObject.add(objectA); // tree has two children, scene has one
+    scene.add(rootObject);
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const rpc = createRpc();
+    rpc.call.mockImplementation(async (operation: string) => {
+      if (operation === 'open') return openResult();
+      if (operation === 'preview') return new Uint8Array([1]);
+      if (operation === 'tree') return { root: structuredTree };
+      return undefined;
+    });
+    doubles.parseAsync.mockResolvedValue({ scene });
+    installRpc(rpc);
+    const { importRvmModel } = await import('../src/viewer/rvmSdk.js');
+
+    const session = await importRvmModel(new ArrayBuffer(1), 'divergent.rvm');
+    expect(session.resolveObject(branchA)).toBeNull();
+    expect(session.resolveObject(branchB)).toBeNull();
+    expect(session.resolveNode(rootObject)).toBe(structuredTree);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain('(未命名节点)');
+    warn.mockRestore();
+    await session.close();
+  });
 });

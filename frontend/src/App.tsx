@@ -17,7 +17,6 @@ export default function App(): React.JSX.Element {
   const viewer = useViewer(runtimeConfig.maxLocalFileBytes);
   const { canvasRef, ui, loadLocalRvm, loadTestRvm, frameCamera, resetCamera } = viewer;
   const hasWorkspace = ui.phase === 'loaded' && viewer.tree !== null && viewer.attributeStats !== null;
-
   return (
     <div className={`rv-app${hasWorkspace ? ' rv-app--workspace' : ''}`}>
       <canvas ref={canvasRef} className="rv-canvas" aria-label="三维模型视图" />
@@ -29,14 +28,24 @@ export default function App(): React.JSX.Element {
           showTestModel
         />
       ) : null}
-      <CameraToolbar disabled={ui.phase !== 'loaded'} onFrame={frameCamera} onReset={resetCamera} />
+      <CameraToolbar
+        disabled={ui.phase !== 'loaded'}
+        onFrame={frameCamera}
+        onReset={resetCamera}
+        onLocateSelected={viewer.locateSelected}
+      />
       {hasWorkspace && viewer.tree && viewer.attributeStats ? (
         <>
           <ModelExplorer
             tree={viewer.tree}
             selectedNode={viewer.selectedNode}
             attributeStats={viewer.attributeStats}
+            hiddenKeys={viewer.hiddenKeys}
             onSelect={(node) => void viewer.selectNode(node)}
+            onLocate={viewer.locateNode}
+            onToggleVisible={viewer.toggleNodeVisible}
+            onIsolate={viewer.isolateNode}
+            onResetVisibility={viewer.resetVisibility}
             onClose={() => setMobilePanel(null)}
             open={mobilePanel === 'tree'}
           />

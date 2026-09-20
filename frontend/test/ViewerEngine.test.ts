@@ -178,4 +178,168 @@ describe('ViewerEngine', () => {
     expect(object.material).not.toBe(sourceMaterial);
     engine.dispose();
   });
+
+  it('highlights a subtree with a shared material and restores the originals', () => {
+    installResizeObserver();
+    vi.stubGlobal(
+      'requestAnimationFrame',
+      vi.fn(() => 7)
+    );
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    const engine = new ViewerEngine(canvas());
+    const plainMaterial = new THREE.MeshStandardMaterial({ color: 0xd14d72 });
+    const arrayMaterialA = new THREE.MeshStandardMaterial({ color: 0x4dd17a });
+    const arrayMaterialB = new THREE.MeshStandardMaterial({ color: 0x4d7ad1 });
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(), plainMaterial);
+    const arrayMesh = new THREE.Mesh(new THREE.BoxGeometry(), [arrayMaterialA, arrayMaterialB]);
+    const subtree = new THREE.Group();
+    subtree.add(mesh, arrayMesh);
+
+    engine.setObject3D(new THREE.Group());
+    engine.setHighlighted(subtree);
+    const highlight = mesh.material as THREE.Material;
+    expect(highlight).not.toBe(plainMaterial);
+    expect(arrayMesh.material).toBe(highlight);
+
+    engine.setHighlighted(null);
+    expect(mesh.material).toBe(plainMaterial);
+    expect(arrayMesh.material).toEqual([arrayMaterialA, arrayMaterialB]);
+
+    engine.setHighlighted(new THREE.Group());
+    engine.dispose();
+  });
+
+  it('frames a subtree box, keeps the viewport when the box is empty, and toggles visibility', () => {
+    installResizeObserver();
+    vi.stubGlobal(
+      'requestAnimationFrame',
+      vi.fn(() => 7)
+    );
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    const engine = new ViewerEngine(canvas());
+    engine.setObject3D(new THREE.Group());
+    const controls = Reflect.get(engine, 'controls') as { target: { x: number; y: number; z: number } };
+
+    const empty = new THREE.Group();
+    engine.frameObject(empty);
+    expect(controls.target.x).toBe(0);
+    expect(controls.target.y).toBe(0);
+    expect(controls.target.z).toBe(0);
+
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2), new THREE.MeshBasicMaterial());
+    const offset = new THREE.Group();
+    offset.position.set(4, 0, 0);
+    offset.add(mesh);
+    engine.frameObject(offset);
+    expect(controls.target.x).toBeCloseTo(4, 5);
+    expect(controls.target.y).toBeCloseTo(0, 5);
+    expect(controls.target.z).toBeCloseTo(0, 5);
+
+    // Camera sitting exactly on the target falls back to the isometric approach.
+    const camera = Reflect.get(engine, 'camera') as THREE.PerspectiveCamera;
+    camera.position.copy(new THREE.Vector3(4, 0, 0));
+    engine.frameObject(offset);
+    expect(controls.target.x).toBeCloseTo(4, 5);
+
+    const parent = new THREE.Group();
+    const child = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());
+    parent.add(child);
+    engine.setSubtreeVisible(parent, false);
+    expect(parent.visible).toBe(false);
+    expect(child.visible).toBe(true);
+    engine.setSubtreeVisible(parent, true);
+    expect(parent.visible).toBe(true);
+    engine.dispose();
+  });
+
+  it('picks scene objects from click events and ignores drags, buttons, and hidden meshes', () => {
+    installResizeObserver();
+    vi.stubGlobal(
+      'requestAnimationFrame',
+      vi.fn(() => 7)
+    );
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    const element = canvas();
+    vi.spyOn(element, 'getBoundingClientRect').mockReturnValue({
+      left: 0,
+      top: 0,
+      width: 640,
+      height: 480,
+    } as DOMRect);
+    const engine = new ViewerEngine(element);
+    const picks: Array<THREE.Object3D | null> = [];
+    engine.setSelectionHandler((object) => picks.push(object));
+
+    const pointer = (type: string, x: number, y: number, button = 0): void => {
+      element.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y, button }));
+    };
+
+    // No scene installed yet: the pick completes with no hit.
+    pointer('pointerdown', 320, 240);
+    pointer('pointerup', 320, 240);
+    expect(picks).toEqual([null]);
+
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2), new THREE.MeshBasicMaterial());
+    engine.setObject3D(mesh);
+    // OrbitControls 是 mock：相机姿态不会自动朝向目标，拾取前手动对准场景中心。
+    const camera = Reflect.get(engine, 'camera') as THREE.PerspectiveCamera;
+    camera.position.set(3, 3, 3);
+    camera.lookAt(0, 0, 0);
+    camera.updateMatrixWorld();
+
+    // Drags beyond the pick slop are orbit gestures, not selections.
+    pointer('pointerdown', 320, 240);
+    pointer('pointerup', 340, 240);
+    expect(picks).toHaveLength(1);
+
+    // Non-primary buttons never pick.
+    pointer('pointerdown', 320, 240, 2);
+    pointer('pointerup', 320, 240, 2);
+    expect(picks).toHaveLength(1);
+
+    // Leaving the canvas cancels a pending press.
+    pointer('pointerdown', 320, 240);
+    element.dispatchEvent(new Event('pointerleave'));
+    pointer('pointerup', 320, 240);
+    expect(picks).toHaveLength(1);
+
+    // A plain click picks the mesh under the cursor.
+    pointer('pointerdown', 320, 240);
+    pointer('pointerup', 320, 240);
+    expect(picks).toEqual([null, mesh]);
+
+    // Hidden meshes are not pickable.
+    mesh.visible = false;
+    pointer('pointerdown', 320, 240);
+    pointer('pointerup', 320, 240);
+    expect(picks).toEqual([null, mesh, null]);
+
+    mesh.visible = true;
+    engine.dispose();
+    pointer('pointerdown', 320, 240);
+    pointer('pointerup', 320, 240);
+    expect(picks).toHaveLength(3);
+  });
+
+  it('skips picking when the canvas has no measurable layout', () => {
+    installResizeObserver();
+    vi.stubGlobal(
+      'requestAnimationFrame',
+      vi.fn(() => 7)
+    );
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    const element = canvas();
+    const engine = new ViewerEngine(element);
+    const picks: Array<THREE.Object3D | null> = [];
+    engine.setSelectionHandler((object) => picks.push(object));
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());
+    engine.setObject3D(mesh);
+
+    element.dispatchEvent(new MouseEvent('pointerdown', { clientX: 10, clientY: 10, button: 0 }));
+    element.dispatchEvent(new MouseEvent('pointerup', { clientX: 10, clientY: 10, button: 0 }));
+    expect(picks).toEqual([]);
+
+    engine.setSelectionHandler(null);
+    engine.dispose();
+  });
 });

@@ -45,9 +45,16 @@ function controller(overrides: Partial<ViewerUiState> = {}): ViewerController {
     propertyPhase: 'idle',
     propertyError: null,
     attributeStats: null,
+    hiddenKeys: new Set<string>(),
     loadLocalRvm: vi.fn().mockResolvedValue(undefined),
     loadTestRvm: vi.fn().mockResolvedValue(undefined),
     selectNode: vi.fn().mockResolvedValue(undefined),
+    clearSelection: vi.fn(),
+    locateNode: vi.fn(),
+    locateSelected: vi.fn(),
+    toggleNodeVisible: vi.fn(),
+    isolateNode: vi.fn(),
+    resetVisibility: vi.fn(),
     frameCamera: vi.fn(),
     resetCamera: vi.fn(),
   };
@@ -117,6 +124,18 @@ describe('App', () => {
     expect(screen.getByLabelText('节点属性')).toHaveClass('rv-dock--open');
     await user.click(screen.getByRole('button', { name: '关闭节点属性' }));
     expect(screen.getByLabelText('节点属性')).not.toHaveClass('rv-dock--open');
+  });
+
+  it('routes the camera locate button to the controller', async () => {
+    const user = userEvent.setup();
+    const value = controller({ phase: 'loaded', name: 'plant.rvm', format: 'RVM' });
+    value.tree = tree;
+    value.selectedNode = tree;
+    useViewer.mockReturnValue(value);
+    render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '定位选中节点' }));
+    expect(value.locateSelected).toHaveBeenCalledOnce();
   });
 
   it('shows the error overlay for a load failure', () => {

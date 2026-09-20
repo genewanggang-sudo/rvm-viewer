@@ -79,6 +79,10 @@ export interface RvmModelSession {
   tree: RvmTreeNode;
   attributeStats: RvmAttributeStats;
   getProperties: (segments: string[]) => Promise<RvmProperty[]>;
+  /** 结构树节点 → 三维场景对象（preview GLB 与 tree 同序同构配对，见联动设计文档）。 */
+  resolveObject: (node: RvmTreeNode) => THREE.Object3D | null;
+  /** 三维场景对象 → 最近的已映射结构树节点（沿祖先链上溯）。 */
+  resolveNode: (object: THREE.Object3D) => RvmTreeNode | null;
   close: () => Promise<void>;
 }
 
@@ -153,6 +157,7 @@ export async function importRvmModel(
         });
         return result.properties;
       },
+      ...createTreeSceneMapping(tree.root, gltf.scene),
       close,
     };
   } catch (error) {
@@ -165,6 +170,55 @@ function ensureRvmFileName(name: string): string {
   const trimmed = name.trim();
   if (/\.rvm$/i.test(trimmed)) return trimmed;
   return `${trimmed || 'model'}.rvm`;
+}
+
+/**
+ * preview GLB 的层级与 tree 逐层同名同序（WD1-PSUP 4677 节点实测 0 错配），
+ * 按孩子索引配对即可建立双向映射；RVM 存在同名兄弟节点，不能按名字查找。
+ * 孩子数不一致时告警一次并跳过该子树的更深层配对，联动静默降级。
+ */
+function createTreeSceneMapping(
+  root: RvmTreeNode,
+  scene: THREE.Object3D
+): {
+  resolveObject: (node: RvmTreeNode) => THREE.Object3D | null;
+  resolveNode: (object: THREE.Object3D) => RvmTreeNode | null;
+} {
+  const nodeToObject = new WeakMap<RvmTreeNode, THREE.Object3D>();
+  const objectToNode = new WeakMap<THREE.Object3D, RvmTreeNode>();
+  const rootObject = scene.children.length === 1 ? scene.children[0] : scene;
+  let mismatchWarned = false;
+
+  const pair = (node: RvmTreeNode, object: THREE.Object3D): void => {
+    nodeToObject.set(node, object);
+    objectToNode.set(object, node);
+    if (node.children.length !== object.children.length) {
+      if (!mismatchWarned) {
+        mismatchWarned = true;
+        console.warn(
+          `RVM 结构树与三维场景在「${node.name || '(未命名节点)'}」处层级不一致，部分节点无法定位`
+        );
+      }
+      return;
+    }
+    for (let index = 0; index < node.children.length; index += 1) {
+      pair(node.children[index], object.children[index]);
+    }
+  };
+  pair(root, rootObject);
+
+  return {
+    resolveObject: (node) => nodeToObject.get(node) ?? null,
+    resolveNode: (object) => {
+      let current: THREE.Object3D | null = object;
+      while (current) {
+        const node = objectToNode.get(current);
+        if (node) return node;
+        current = current.parent;
+      }
+      return null;
+    },
+  };
 }
 
 async function createRvmRpc(): Promise<RvmRpcClient> {

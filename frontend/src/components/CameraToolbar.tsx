@@ -1,14 +1,29 @@
-import { Box, Maximize2 } from 'lucide-react';
+import { Box, Crosshair, Maximize2 } from 'lucide-react';
 
 interface CameraToolbarProps {
   disabled: boolean;
   onFrame: () => void;
   onReset: () => void;
+  onLocateSelected: () => void;
 }
 
-export function CameraToolbar({ disabled, onFrame, onReset }: CameraToolbarProps): React.JSX.Element {
+export function CameraToolbar({
+  disabled,
+  onFrame,
+  onReset,
+  onLocateSelected,
+}: CameraToolbarProps): React.JSX.Element {
   return (
     <nav className="rv-camera-tools" aria-label="相机控制">
+      <button
+        type="button"
+        aria-label="定位选中节点"
+        title="定位选中节点（未选中时无操作）"
+        disabled={disabled}
+        onClick={onLocateSelected}
+      >
+        <Crosshair aria-hidden="true" size={17} strokeWidth={1.8} />
+      </button>
       <button
         type="button"
         aria-label="按当前视角适配模型"
