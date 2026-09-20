@@ -41,7 +41,8 @@ node scripts/pack_thin_html.mjs `
 它读取部署的 viewer 入口，以嵌套
 srcdoc 启动并注入文件查询参数、正确的 Worker 部署目录，兼容当前线上旧包。
 薄页顶部状态条只显示连接、读取和启动错误；收到 viewer 的可信渲染成功回执后会自动
-收起并让 iframe 占满页面。此后显示的是 viewer 自身的状态栏、模型信息和相机工具。
+收起并让 iframe 占满页面。此后显示的是 viewer 自身的三维画布、模型结构树、节点属性
+面板和相机工具。
 
 当前验证环境为 AIDT 与 viewer 同源（`www.czy3d.com`）。真实验收必须在平台登录态
 执行；不同域名的部署还需要验证入口 CORS、Worker 同源限制和平台文件 Cookie 权限。
