@@ -470,7 +470,9 @@ describe('useViewer', () => {
     expect(mocks.engineFrameObject).toHaveBeenCalledOnce();
 
     current().locateNode(child);
-    expect(mocks.engineFrameObject).toHaveBeenLastCalledWith(childObject);
+    expect(mocks.engineFrameObject).toHaveBeenCalledWith(childObject);
+    // 定位 = 选中 + 高亮 + 飞行
+    expect(mocks.engineSetHighlighted).toHaveBeenCalledWith(childObject);
 
     current().locateNode(tree);
     expect(mocks.engineFrameModel).toHaveBeenLastCalledWith();
@@ -503,7 +505,7 @@ describe('useViewer', () => {
     expect(current().hiddenKeys).toEqual(new Set());
   });
 
-  it('isolates the branch containing a node and restores all branches', async () => {
+  it('locating a node reveals its hidden ancestors and leaves unrelated branches hidden', async () => {
     const branchA: RvmTreeNode = {
       name: 'A',
       segments: ['plant', 'A'],
@@ -559,36 +561,12 @@ describe('useViewer', () => {
       await handlers().onRvmFile({ bytes: new ArrayBuffer(3), name: 'wide.rvm' });
     });
 
-    act(() => current().isolateNode(branchB));
-    expect(mocks.engineSetSubtreeVisible).toHaveBeenCalledWith(objectA, false);
-    expect(mocks.engineSetSubtreeVisible).toHaveBeenCalledWith(objectB, true);
-    // branchC 没有场景映射，无法控制显隐，跳过且不进入隐藏集合。
-    expect(current().hiddenKeys).toEqual(new Set(['0/0']));
-    expect(mocks.engineFrameObject).toHaveBeenLastCalledWith(objectB);
-
-    act(() => current().resetVisibility());
-    expect(mocks.engineSetSubtreeVisible).toHaveBeenCalledWith(objectA, true);
-    expect(mocks.engineSetSubtreeVisible).toHaveBeenCalledWith(objectB, true);
-    expect(current().hiddenKeys).toEqual(new Set());
-
-    act(() => current().isolateNode(wideTree));
-    expect(mocks.engineFrameModel).toHaveBeenCalledOnce();
-    expect(mocks.engineSetSubtreeVisible).toHaveBeenLastCalledWith(objectB, true);
-
-    // Isolating a node outside the tree is a no-op.
-    act(() => current().isolateNode({ ...branchB }));
-    expect(mocks.engineFrameModel).toHaveBeenCalledOnce();
-    act(() => current().locateNode({ ...branchB }));
-    expect(mocks.engineFrameModel).toHaveBeenCalledOnce();
-
-    // Unmapped nodes cannot be toggled, and isolating one skips the camera fit.
-    act(() => current().toggleNodeVisible({ ...branchB }, '9/9'));
-    expect(current().hiddenKeys).toEqual(new Set());
-    act(() => current().isolateNode(branchC));
-    expect(mocks.engineFrameObject).toHaveBeenLastCalledWith(objectB);
+    // 隐藏 A、B 两个分支（C 没有场景映射，无法隐藏）。
+    act(() => current().toggleNodeVisible(branchA, '0/0'));
+    act(() => current().toggleNodeVisible(branchB, '0/1'));
     expect(current().hiddenKeys).toEqual(new Set(['0/0', '0/1']));
 
-    // 隔离后定位隐藏分支：只恢复定位路径上的分支，其余保持隐藏。
+    // 定位胜过隐藏：只恢复定位路径上的分支，其余保持隐藏。
     act(() => current().locateNode(branchA));
     expect(mocks.engineSetSubtreeVisible).toHaveBeenLastCalledWith(objectA, true);
     expect(current().hiddenKeys).toEqual(new Set(['0/1']));
@@ -599,6 +577,19 @@ describe('useViewer', () => {
     act(() => current().locateNode(branchC));
     expect(mocks.engineFrameObject.mock.calls.length).toBe(framesBefore);
     expect(current().hiddenKeys).toEqual(new Set(['0/1']));
+
+    // 定位树外的节点（同一性查不到路径）：同样是静默跳过。
+    act(() => current().locateNode({ ...branchB }));
+    expect(mocks.engineFrameObject.mock.calls.length).toBe(framesBefore);
+    expect(current().hiddenKeys).toEqual(new Set(['0/1']));
+
+    // Unmapped nodes cannot be toggled.
+    act(() => current().toggleNodeVisible({ ...branchB }, '9/9'));
+    expect(current().hiddenKeys).toEqual(new Set(['0/1']));
+
+    act(() => current().resetVisibility());
+    expect(mocks.engineSetSubtreeVisible).toHaveBeenLastCalledWith(objectB, true);
+    expect(current().hiddenKeys).toEqual(new Set());
   });
 
   it('ignores scene picks and visibility work before a model is loaded', () => {
@@ -607,7 +598,6 @@ describe('useViewer', () => {
     if (!pick) throw new Error('selection handler was not installed');
     act(() => {
       pick(new THREE.Group());
-      current().isolateNode(tree);
       current().resetVisibility();
       current().toggleNodeVisible(tree, '0');
       void current().selectNode(tree);

@@ -53,7 +53,6 @@ function controller(overrides: Partial<ViewerUiState> = {}): ViewerController {
     locateNode: vi.fn(),
     locateSelected: vi.fn(),
     toggleNodeVisible: vi.fn(),
-    isolateNode: vi.fn(),
     resetVisibility: vi.fn(),
     frameCamera: vi.fn(),
     resetCamera: vi.fn(),

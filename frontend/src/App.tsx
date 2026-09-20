@@ -44,7 +44,6 @@ export default function App(): React.JSX.Element {
             onSelect={(node) => void viewer.selectNode(node)}
             onLocate={viewer.locateNode}
             onToggleVisible={viewer.toggleNodeVisible}
-            onIsolate={viewer.isolateNode}
             onResetVisibility={viewer.resetVisibility}
             onClose={() => setMobilePanel(null)}
             open={mobilePanel === 'tree'}

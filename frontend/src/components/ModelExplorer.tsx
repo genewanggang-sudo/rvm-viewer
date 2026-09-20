@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Boxes, ChevronDown, ChevronRight, Crosshair, Eye, EyeOff, ScanEye, X } from 'lucide-react';
+import { Boxes, ChevronDown, ChevronRight, Crosshair, Eye, EyeOff, X } from 'lucide-react';
 import type { RvmAttributeStats, RvmTreeNode } from '../viewer/rvmSdk.js';
 import { rvmNodeDisplayPath } from '../viewer/rvmSdk.js';
 import {
@@ -38,7 +38,6 @@ interface ModelExplorerProps {
   onSelect: (node: RvmTreeNode) => void;
   onLocate: (node: RvmTreeNode) => void;
   onToggleVisible: (node: RvmTreeNode, key: string) => void;
-  onIsolate: (node: RvmTreeNode) => void;
   onResetVisibility: () => void;
   onClose: () => void;
   open: boolean;
@@ -52,7 +51,6 @@ export function ModelExplorer({
   onSelect,
   onLocate,
   onToggleVisible,
-  onIsolate,
   onResetVisibility,
   onClose,
   open,
@@ -218,7 +216,6 @@ export function ModelExplorer({
             onLocate={onLocate}
             onToggleExpanded={toggleExpanded}
             onToggleVisible={onToggleVisible}
-            onIsolate={onIsolate}
           />
         </ul>
       </div>
@@ -253,7 +250,6 @@ interface TreeItemProps {
   onLocate: (node: RvmTreeNode) => void;
   onToggleExpanded: (key: string, next: boolean) => void;
   onToggleVisible: (node: RvmTreeNode, key: string) => void;
-  onIsolate: (node: RvmTreeNode) => void;
 }
 
 function TreeItem({
@@ -269,7 +265,6 @@ function TreeItem({
   onLocate,
   onToggleExpanded,
   onToggleVisible,
-  onIsolate,
 }: TreeItemProps): React.JSX.Element {
   const hasChildren = node.children.length > 0;
   const isExpanded = expanded.has(nodeKey);
@@ -279,7 +274,6 @@ function TreeItem({
   const selectTitle = hasGeometry
     ? rvmNodeDisplayPath(node)
     : `${rvmNodeDisplayPath(node)}（无三维实体，仅供组织归类）`;
-  const isolate = (): void => onIsolate(node);
   const toggleVisible = (): void => onToggleVisible(node, nodeKey);
 
   return (
@@ -315,7 +309,7 @@ function TreeItem({
           onDoubleClick={() => {
             onSelect(node);
             onToggleExpanded(nodeKey, true);
-            onLocate(node);
+            if (hasGeometry) onLocate(node);
           }}
         >
           <span className={hasGeometry ? undefined : 'rv-tree__name--empty'}>
@@ -323,17 +317,9 @@ function TreeItem({
           </span>
           {node.propertyCount > 0 ? <small>{node.propertyCount}</small> : null}
         </button>
-        {/* 无三维实体的组织节点：定位/隔离/显隐都是无效操作，不显示工具 */}
+        {/* 无三维实体的组织节点：定位/显隐都是无效操作，不显示工具 */}
         {hasGeometry ? (
           <span className="rv-tree__tools">
-            <button
-              type="button"
-              aria-label={`隔离显示 ${nodeDisplayName(node)}`}
-              title="隔离显示"
-              onClick={isolate}
-            >
-              <ScanEye aria-hidden="true" size={14} />
-            </button>
             <button
               type="button"
               aria-label={`${hidden ? '显示' : '隐藏'} ${nodeDisplayName(node)}`}
@@ -346,7 +332,10 @@ function TreeItem({
               type="button"
               aria-label={`定位 ${nodeDisplayName(node)}`}
               title="定位到三维模型"
-              onClick={() => onLocate(node)}
+              onClick={() => {
+                onSelect(node);
+                onLocate(node);
+              }}
             >
               <Crosshair aria-hidden="true" size={14} />
             </button>
@@ -370,7 +359,6 @@ function TreeItem({
               onLocate={onLocate}
               onToggleExpanded={onToggleExpanded}
               onToggleVisible={onToggleVisible}
-              onIsolate={onIsolate}
             />
           ))}
         </ul>

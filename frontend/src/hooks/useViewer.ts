@@ -56,7 +56,6 @@ export interface ViewerController {
   locateNode: (node: RvmTreeNode) => void;
   locateSelected: () => void;
   toggleNodeVisible: (node: RvmTreeNode, key: string) => void;
-  isolateNode: (node: RvmTreeNode) => void;
   resetVisibility: () => void;
   frameCamera: () => void;
   resetCamera: () => void;
@@ -141,38 +140,42 @@ export function useViewer(maxLocalFileBytes: number): ViewerController {
    * 定位语义：目标及其祖先必须可见（定位胜过隐藏）——先恢复被隐藏的
    * 祖先分支并同步隐藏集合，再飞向目标包围盒。
    */
-  const locateNode = useCallback((node: RvmTreeNode): void => {
-    const session = sessionRef.current;
-    const engine = engineRef.current;
-    if (!session || !engine) return;
-    if (node === session.tree) {
-      engine.frameModel();
-      return;
-    }
-    const path = findIndexPath(session.tree, node);
-    if (!path) return;
-    const revealed: string[] = [];
-    let ancestor = session.tree;
-    let ancestorKey = TREE_ROOT_KEY;
-    for (const index of path) {
-      ancestor = ancestor.children[index];
-      ancestorKey = childKey(ancestorKey, index);
-      const ancestorObject = session.resolveObject(ancestor);
-      if (ancestorObject && !ancestorObject.visible) {
-        engine.setSubtreeVisible(ancestorObject, true);
-        revealed.push(ancestorKey);
+  const locateNode = useCallback(
+    (node: RvmTreeNode): void => {
+      const session = sessionRef.current;
+      const engine = engineRef.current;
+      if (!session || !engine) return;
+      applySelectionHighlight(node);
+      if (node === session.tree) {
+        engine.frameModel();
+        return;
       }
-    }
-    if (revealed.length > 0) {
-      setHiddenKeys((current) => {
-        const next = new Set(current);
-        for (const key of revealed) next.delete(key);
-        return next;
-      });
-    }
-    const object = session.resolveObject(node);
-    if (object) engine.frameObject(object);
-  }, []);
+      const path = findIndexPath(session.tree, node);
+      if (!path) return;
+      const revealed: string[] = [];
+      let ancestor = session.tree;
+      let ancestorKey = TREE_ROOT_KEY;
+      for (const index of path) {
+        ancestor = ancestor.children[index];
+        ancestorKey = childKey(ancestorKey, index);
+        const ancestorObject = session.resolveObject(ancestor);
+        if (ancestorObject && !ancestorObject.visible) {
+          engine.setSubtreeVisible(ancestorObject, true);
+          revealed.push(ancestorKey);
+        }
+      }
+      if (revealed.length > 0) {
+        setHiddenKeys((current) => {
+          const next = new Set(current);
+          for (const key of revealed) next.delete(key);
+          return next;
+        });
+      }
+      const object = session.resolveObject(node);
+      if (object) engine.frameObject(object);
+    },
+    [applySelectionHighlight]
+  );
 
   /** 相机工具条的定位按钮：未选中节点时是安全的空操作。 */
   const locateSelected = useCallback((): void => {
@@ -193,30 +196,6 @@ export function useViewer(maxLocalFileBytes: number): ViewerController {
       else next.add(key);
       return next;
     });
-  }, []);
-
-  /** 隔离：只保留包含该节点的一级分支，其余隐藏并定位到目标。 */
-  const isolateNode = useCallback((node: RvmTreeNode): void => {
-    const session = sessionRef.current;
-    const engine = engineRef.current;
-    if (!session || !engine) return;
-    if (node === session.tree) {
-      engine.frameModel();
-      return;
-    }
-    const path = findIndexPath(session.tree, node);
-    if (!path) return;
-    const hidden = new Set<string>();
-    session.tree.children.forEach((branch, index) => {
-      const object = session.resolveObject(branch);
-      if (!object) return;
-      const keep = index === path[0];
-      engine.setSubtreeVisible(object, keep);
-      if (!keep) hidden.add(childKey(TREE_ROOT_KEY, index));
-    });
-    setHiddenKeys(hidden);
-    const object = session.resolveObject(node);
-    if (object) engine.frameObject(object);
   }, []);
 
   const resetVisibility = useCallback((): void => {
@@ -399,7 +378,6 @@ export function useViewer(maxLocalFileBytes: number): ViewerController {
     locateNode,
     locateSelected,
     toggleNodeVisible,
-    isolateNode,
     resetVisibility,
     frameCamera,
     resetCamera,

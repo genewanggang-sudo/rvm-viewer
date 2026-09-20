@@ -7,10 +7,20 @@ const DEFAULT_MODEL_COLOR = 0xb9c7d1;
 const HIGHLIGHT_COLOR = 0xffa43d;
 const ISOMETRIC_DIRECTION = new THREE.Vector3(1.45, 1.1, 1.45).normalize();
 const PICK_SLOP_PIXELS = 4;
+const CAMERA_TWEEN_MS = 450;
 
 interface CameraFrame {
   target: THREE.Vector3;
   distance: number;
+}
+
+/** 相机飞行动画：起止位姿 + 起始时间，逐帧缓动插值。 */
+interface CameraTween {
+  fromPosition: THREE.Vector3;
+  toPosition: THREE.Vector3;
+  fromTarget: THREE.Vector3;
+  toTarget: THREE.Vector3;
+  start: number;
 }
 
 export type ScenePickHandler = (object: THREE.Object3D | null) => void;
@@ -40,9 +50,11 @@ export class ViewerEngine {
   private readonly pointerDownHandler: (event: PointerEvent) => void;
   private readonly pointerUpHandler: (event: PointerEvent) => void;
   private readonly pointerLeaveHandler: () => void;
+  private readonly wheelHandler: () => void;
   private highlightSwaps: HighlightSwap[] = [];
   private selectionHandler: ScenePickHandler | null = null;
   private pointerDownPosition: { x: number; y: number } | null = null;
+  private cameraTween: CameraTween | null = null;
   private activeObject: THREE.Object3D | null = null;
   private frameId = 0;
   private disposed = false;
@@ -74,8 +86,12 @@ export class ViewerEngine {
     window.addEventListener('resize', this.resizeHandler);
 
     this.pointerDownHandler = (event) => {
+      this.cameraTween = null;
       if (event.button !== 0) return;
       this.pointerDownPosition = { x: event.clientX, y: event.clientY };
+    };
+    this.wheelHandler = () => {
+      this.cameraTween = null;
     };
     this.pointerUpHandler = (event) => {
       const down = this.pointerDownPosition;
@@ -94,9 +110,10 @@ export class ViewerEngine {
     canvas.addEventListener('pointerdown', this.pointerDownHandler);
     canvas.addEventListener('pointerup', this.pointerUpHandler);
     canvas.addEventListener('pointerleave', this.pointerLeaveHandler);
+    canvas.addEventListener('wheel', this.wheelHandler, { passive: true });
 
     this.resize();
-    this.resetCamera();
+    this.applyCameraFrame(this.getCameraFrame(), ISOMETRIC_DIRECTION, false);
     this.renderLoop();
   }
 
@@ -120,11 +137,15 @@ export class ViewerEngine {
   }
 
   /** 相机对准子树包围盒（保持当前视角方向）；包围盒为空时不动。 */
-  frameObject(object: THREE.Object3D): void {
+  frameObject(object: THREE.Object3D, animate = true): void {
     const box = new THREE.Box3().setFromObject(object);
     if (box.isEmpty()) return;
     const direction = this.camera.position.clone().sub(this.controls.target);
-    this.applyCameraFrame(this.frameFor(box), direction.lengthSq() > 0 ? direction : ISOMETRIC_DIRECTION);
+    this.applyCameraFrame(
+      this.frameFor(box),
+      direction.lengthSq() > 0 ? direction : ISOMETRIC_DIRECTION,
+      animate
+    );
   }
 
   setObject3D(object: THREE.Object3D): RenderStats {
@@ -144,18 +165,19 @@ export class ViewerEngine {
 
     this.activeObject = wrapper;
     this.scene.add(wrapper);
-    this.resetCamera();
+    this.cameraTween = null;
+    this.resetCamera(false);
     return countObjectGeometry(object);
   }
 
   frameModel(): void {
     const frame = this.getCameraFrame();
     const direction = this.camera.position.clone().sub(this.controls.target);
-    this.applyCameraFrame(frame, direction.lengthSq() > 0 ? direction : ISOMETRIC_DIRECTION);
+    this.applyCameraFrame(frame, direction.lengthSq() > 0 ? direction : ISOMETRIC_DIRECTION, true);
   }
 
-  resetCamera(): void {
-    this.applyCameraFrame(this.getCameraFrame(), ISOMETRIC_DIRECTION);
+  resetCamera(animate = true): void {
+    this.applyCameraFrame(this.getCameraFrame(), ISOMETRIC_DIRECTION, animate);
   }
 
   clear(): void {
@@ -176,6 +198,7 @@ export class ViewerEngine {
     this.canvas.removeEventListener('pointerdown', this.pointerDownHandler);
     this.canvas.removeEventListener('pointerup', this.pointerUpHandler);
     this.canvas.removeEventListener('pointerleave', this.pointerLeaveHandler);
+    this.canvas.removeEventListener('wheel', this.wheelHandler);
     this.clear();
     this.controls.dispose();
     this.renderer.dispose();
@@ -221,19 +244,48 @@ export class ViewerEngine {
     this.highlightSwaps = [];
   }
 
-  private applyCameraFrame(frame: CameraFrame, direction: THREE.Vector3): void {
-    this.controls.target.copy(frame.target);
-    this.camera.position.copy(frame.target).addScaledVector(direction.normalize(), frame.distance);
-    this.camera.near = Math.max(frame.distance / 100, 0.01);
-    this.camera.far = Math.max(frame.distance * 100, 100);
+  private applyCameraFrame(frame: CameraFrame, direction: THREE.Vector3, animate: boolean): void {
+    const toPosition = frame.target.clone().addScaledVector(direction.clone().normalize(), frame.distance);
+    if (!animate) {
+      this.controls.target.copy(frame.target);
+      this.camera.position.copy(toPosition);
+      this.updateCameraClipping(frame.distance);
+      this.controls.update();
+      this.cameraTween = null;
+      return;
+    }
+    this.cameraTween = {
+      fromPosition: this.camera.position.clone(),
+      toPosition,
+      fromTarget: new THREE.Vector3().copy(this.controls.target),
+      toTarget: frame.target.clone(),
+      start: performance.now(),
+    };
+  }
+
+  /** 逐帧推进相机飞行动画；用户交互（拖拽/滚轮）会取消它。 */
+  private stepCameraTween(): void {
+    const tween = this.cameraTween;
+    if (!tween) return;
+    const progress = Math.min((performance.now() - tween.start) / CAMERA_TWEEN_MS, 1);
+    const eased = progress < 0.5 ? 4 * progress ** 3 : 1 - (-2 * progress + 2) ** 3 / 2;
+    this.camera.position.lerpVectors(tween.fromPosition, tween.toPosition, eased);
+    this.controls.target.copy(new THREE.Vector3().lerpVectors(tween.fromTarget, tween.toTarget, eased));
+    this.updateCameraClipping(this.camera.position.distanceTo(this.controls.target));
+    if (progress >= 1) this.cameraTween = null;
+  }
+
+  private updateCameraClipping(distance: number): void {
+    this.camera.near = Math.max(distance / 100, 0.01);
+    this.camera.far = Math.max(distance * 100, 100);
     this.camera.updateProjectionMatrix();
-    this.controls.update();
   }
 
   private renderLoop(): void {
     if (this.disposed) return;
     this.frameId = requestAnimationFrame(() => this.renderLoop());
     this.controls.update();
+    this.stepCameraTween();
     this.renderer.render(this.scene, this.camera);
   }
 }

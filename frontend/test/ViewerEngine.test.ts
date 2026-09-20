@@ -230,7 +230,7 @@ describe('ViewerEngine', () => {
     const offset = new THREE.Group();
     offset.position.set(4, 0, 0);
     offset.add(mesh);
-    engine.frameObject(offset);
+    engine.frameObject(offset, false);
     expect(controls.target.x).toBeCloseTo(4, 5);
     expect(controls.target.y).toBeCloseTo(0, 5);
     expect(controls.target.z).toBeCloseTo(0, 5);
@@ -238,7 +238,7 @@ describe('ViewerEngine', () => {
     // Camera sitting exactly on the target falls back to the isometric approach.
     const camera = Reflect.get(engine, 'camera') as THREE.PerspectiveCamera;
     camera.position.copy(new THREE.Vector3(4, 0, 0));
-    engine.frameObject(offset);
+    engine.frameObject(offset, false);
     expect(controls.target.x).toBeCloseTo(4, 5);
 
     const parent = new THREE.Group();
@@ -319,6 +319,53 @@ describe('ViewerEngine', () => {
     pointer('pointerdown', 320, 240);
     pointer('pointerup', 320, 240);
     expect(picks).toHaveLength(3);
+  });
+
+  it('animates camera framing and cancels the tween when the user interacts', async () => {
+    installResizeObserver();
+    let rafCb: FrameRequestCallback | undefined;
+    vi.stubGlobal(
+      'requestAnimationFrame',
+      vi.fn((cb: FrameRequestCallback) => {
+        rafCb = cb;
+        return 1;
+      })
+    );
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    const element = canvas();
+    const engine = new ViewerEngine(element);
+    engine.setObject3D(new THREE.Group());
+    const controls = Reflect.get(engine, 'controls') as { target: { x: number; y: number; z: number } };
+    const pump = async (ms: number): Promise<void> => {
+      const deadline = performance.now() + ms;
+      while (performance.now() < deadline) {
+        rafCb?.(0);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    };
+
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2), new THREE.MeshBasicMaterial());
+    const offset = new THREE.Group();
+    offset.position.set(4, 0, 0);
+    offset.add(mesh);
+    engine.frameObject(offset);
+    expect(controls.target.x).toBe(0); // 动画未推进前相机保持原地
+
+    await pump(1500);
+    expect(controls.target.x).toBeCloseTo(4, 1);
+
+    // 用户交互取消动画：拖拽或滚轮都会立即停止插值
+    engine.frameObject(offset);
+    element.dispatchEvent(new MouseEvent('pointerdown', { button: 0, clientX: 10, clientY: 10 }));
+    const frozenX = controls.target.x;
+    await pump(200);
+    expect(controls.target.x).toBeCloseTo(frozenX, 3);
+
+    engine.frameObject(offset);
+    element.dispatchEvent(new Event('wheel'));
+    await pump(200);
+    expect(controls.target.x).toBeCloseTo(frozenX, 3);
+    engine.dispose();
   });
 
   it('skips picking when the canvas has no measurable layout', () => {

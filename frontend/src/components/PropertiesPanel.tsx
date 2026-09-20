@@ -43,12 +43,16 @@ export function PropertiesPanel({
         ) : null}
         {phase === 'loaded' && properties.length > 0 ? (
           <dl className="rv-properties">
-            {properties.map((property, index) => (
-              <div key={`${property.name}-${index}`}>
-                <dt>{property.name}</dt>
-                <dd>{property.value}</dd>
-              </div>
-            ))}
+            {properties.map((property, index) => {
+              // SDK 内置属性带 rvm: 命名空间，展示时只保留字段名，完整键名放在 title
+              const displayName = property.name.replace(/^rvm:/, '');
+              return (
+                <div key={`${property.name}-${index}`}>
+                  <dt title={property.name}>{displayName}</dt>
+                  <dd>{property.value}</dd>
+                </div>
+              );
+            })}
           </dl>
         ) : null}
       </div>

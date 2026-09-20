@@ -159,7 +159,6 @@ describe('model information panels', () => {
     hiddenKeys: new Set<string>(),
     onLocate: vi.fn(),
     onToggleVisible: vi.fn(),
-    onIsolate: vi.fn(),
     onResetVisibility: vi.fn(),
     onClose: vi.fn(),
     open: true,
@@ -204,12 +203,11 @@ describe('model information panels', () => {
     expect(screen.getByText('未加载外部属性')).toBeInTheDocument();
   });
 
-  it('exposes locate, isolate, and visibility tools on tree rows', async () => {
+  it('exposes locate and visibility tools on tree rows', async () => {
     const user = userEvent.setup();
     const onSelect = vi.fn();
     const onLocate = vi.fn();
     const onToggleVisible = vi.fn();
-    const onIsolate = vi.fn();
     render(
       <ModelExplorer
         tree={tree}
@@ -219,7 +217,6 @@ describe('model information panels', () => {
         {...explorerProps}
         onLocate={onLocate}
         onToggleVisible={onToggleVisible}
-        onIsolate={onIsolate}
         open
       />
     );
@@ -228,18 +225,20 @@ describe('model information panels', () => {
     expect(onSelect).toHaveBeenCalledWith(tree);
     expect(onLocate).toHaveBeenCalledWith(tree);
 
-    await user.click(screen.getByRole('button', { name: '隔离显示 ROOT' }));
-    expect(onIsolate).toHaveBeenCalledWith(tree);
-
     await user.click(screen.getByRole('button', { name: '隐藏 ROOT' }));
     expect(onToggleVisible).toHaveBeenCalledWith(tree, '0');
 
     await user.click(screen.getByRole('button', { name: '定位 ROOT' }));
     expect(onLocate).toHaveBeenCalledWith(tree);
+    expect(onSelect).toHaveBeenCalledWith(tree);
 
-    // 无三维实体的组织节点不提供定位/隔离/显隐工具
+    // 空组双击只选中，不触发定位（无几何可飞）
+    await user.dblClick(screen.getByRole('button', { name: '(未命名节点)' }));
+    expect(onSelect).toHaveBeenCalledWith(tree.children[0]);
+    expect(onLocate).not.toHaveBeenCalledWith(tree.children[0]);
+
+    // 无三维实体的组织节点不提供定位/显隐工具
     expect(screen.queryByRole('button', { name: '隐藏 (未命名节点)' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: '隔离显示 (未命名节点)' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '定位 (未命名节点)' })).not.toBeInTheDocument();
   });
 
@@ -585,6 +584,27 @@ describe('model information panels', () => {
     );
     expect(screen.getByText('Tag')).toBeInTheDocument();
     expect(screen.getByText('P-101')).toBeInTheDocument();
+
+    // 内置属性的 rvm: 命名空间在展示层剥掉，悬停保留完整键名；非 rvm: 键不受影响
+    rerender(
+      <PropertiesPanel
+        node={null}
+        properties={[
+          { name: 'rvm:RefNo', value: "'=16821/2'" },
+          { name: '自定义', value: 'x' },
+        ]}
+        phase="loaded"
+        error={null}
+        onClose={onClose}
+        open={false}
+      />
+    );
+    const refNoKey = screen.getByText('RefNo');
+    expect(refNoKey).toBeInTheDocument();
+    expect(refNoKey.getAttribute('title')).toBe('rvm:RefNo');
+    expect(screen.queryByText('rvm:RefNo')).not.toBeInTheDocument();
+    expect(screen.getByText('自定义')).toBeInTheDocument();
+    expect(screen.getByText('自定义')).toHaveAttribute('title', '自定义');
   });
 });
 
