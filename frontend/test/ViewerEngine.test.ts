@@ -123,7 +123,8 @@ describe('ViewerEngine', () => {
     engine.frameModel();
     engine.resetCamera();
     expect(engine.setObject3D(new THREE.Group())).toEqual({ vertices: 0, triangles: 0 });
-    const camera = Reflect.get(engine, 'camera') as THREE.PerspectiveCamera;
+    const camera = Reflect.get(engine, 'camera') as THREE.OrthographicCamera;
+    expect(camera.isOrthographicCamera).toBe(true);
     const target = Reflect.get(engine, 'controls').target as { x: number; y: number; z: number };
     camera.position.set(target.x, target.y, target.z);
     engine.frameModel();
@@ -236,10 +237,15 @@ describe('ViewerEngine', () => {
     expect(controls.target.z).toBeCloseTo(0, 5);
 
     // Camera sitting exactly on the target falls back to the isometric approach.
-    const camera = Reflect.get(engine, 'camera') as THREE.PerspectiveCamera;
+    const camera = Reflect.get(engine, 'camera') as THREE.OrthographicCamera;
     camera.position.copy(new THREE.Vector3(4, 0, 0));
     engine.frameObject(offset, false);
     expect(controls.target.x).toBeCloseTo(4, 5);
+
+    // 竖直视角使用备用 up 轴，避免投影基向量退化。
+    camera.position.set(4, 3, 0);
+    engine.frameObject(offset, false);
+    expect(camera.zoom).toBeGreaterThan(0);
 
     const parent = new THREE.Group();
     const child = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());
@@ -282,7 +288,7 @@ describe('ViewerEngine', () => {
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2), new THREE.MeshBasicMaterial());
     engine.setObject3D(mesh);
     // OrbitControls 是 mock：相机姿态不会自动朝向目标，拾取前手动对准场景中心。
-    const camera = Reflect.get(engine, 'camera') as THREE.PerspectiveCamera;
+    const camera = Reflect.get(engine, 'camera') as THREE.OrthographicCamera;
     camera.position.set(3, 3, 3);
     camera.lookAt(0, 0, 0);
     camera.updateMatrixWorld();

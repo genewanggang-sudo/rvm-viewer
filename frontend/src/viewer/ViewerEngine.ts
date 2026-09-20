@@ -8,10 +8,12 @@ const HIGHLIGHT_COLOR = 0xffa43d;
 const ISOMETRIC_DIRECTION = new THREE.Vector3(1.45, 1.1, 1.45).normalize();
 const PICK_SLOP_PIXELS = 4;
 const CAMERA_TWEEN_MS = 450;
+const FIT_MARGIN = 1.06;
 
 interface CameraFrame {
   target: THREE.Vector3;
   distance: number;
+  zoom: number;
 }
 
 /** 相机飞行动画：起止位姿 + 起始时间，逐帧缓动插值。 */
@@ -20,6 +22,8 @@ interface CameraTween {
   toPosition: THREE.Vector3;
   fromTarget: THREE.Vector3;
   toTarget: THREE.Vector3;
+  fromZoom: number;
+  toZoom: number;
   start: number;
 }
 
@@ -33,7 +37,7 @@ interface HighlightSwap {
 export class ViewerEngine {
   private readonly renderer: THREE.WebGLRenderer;
   private readonly scene = new THREE.Scene();
-  private readonly camera = new THREE.PerspectiveCamera(45, 1, 0.01, 100);
+  private readonly camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.01, 100);
   private readonly controls: OrbitControls;
   private readonly resizeHandler: () => void;
   private readonly resizeObserver: ResizeObserver;
@@ -113,7 +117,7 @@ export class ViewerEngine {
     canvas.addEventListener('wheel', this.wheelHandler, { passive: true });
 
     this.resize();
-    this.applyCameraFrame(this.getCameraFrame(), ISOMETRIC_DIRECTION, false);
+    this.applyCameraFrame(this.getCameraFrame(ISOMETRIC_DIRECTION), ISOMETRIC_DIRECTION, false);
     this.renderLoop();
   }
 
@@ -142,7 +146,11 @@ export class ViewerEngine {
     if (box.isEmpty()) return;
     const direction = this.camera.position.clone().sub(this.controls.target);
     this.applyCameraFrame(
-      this.frameFor(box),
+      this.frameFor(
+        box,
+        direction.lengthSq() > 0 ? direction : ISOMETRIC_DIRECTION,
+        this.currentCameraDistance()
+      ),
       direction.lengthSq() > 0 ? direction : ISOMETRIC_DIRECTION,
       animate
     );
@@ -171,13 +179,17 @@ export class ViewerEngine {
   }
 
   frameModel(): void {
-    const frame = this.getCameraFrame();
     const direction = this.camera.position.clone().sub(this.controls.target);
-    this.applyCameraFrame(frame, direction.lengthSq() > 0 ? direction : ISOMETRIC_DIRECTION, true);
+    const viewDirection = direction.lengthSq() > 0 ? direction : ISOMETRIC_DIRECTION;
+    this.applyCameraFrame(
+      this.getCameraFrame(viewDirection, this.currentCameraDistance()),
+      viewDirection,
+      true
+    );
   }
 
   resetCamera(animate = true): void {
-    this.applyCameraFrame(this.getCameraFrame(), ISOMETRIC_DIRECTION, animate);
+    this.applyCameraFrame(this.getCameraFrame(ISOMETRIC_DIRECTION), ISOMETRIC_DIRECTION, animate);
   }
 
   clear(): void {
@@ -210,22 +222,42 @@ export class ViewerEngine {
     const height = this.canvas.clientHeight || window.innerHeight;
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.renderer.setSize(width, height, false);
-    this.camera.aspect = width / height;
+    const aspect = width / height;
+    this.camera.left = -aspect;
+    this.camera.right = aspect;
+    this.camera.top = 1;
+    this.camera.bottom = -1;
     this.camera.updateProjectionMatrix();
   }
 
-  private getCameraFrame(): CameraFrame {
+  private getCameraFrame(direction: THREE.Vector3, distance = 3): CameraFrame {
     const box = new THREE.Box3();
     if (this.activeObject) box.setFromObject(this.activeObject);
-    if (box.isEmpty()) return { target: new THREE.Vector3(), distance: 3 };
-    return this.frameFor(box);
+    if (box.isEmpty()) return { target: new THREE.Vector3(), distance, zoom: 1 };
+    return this.frameFor(box, direction, distance);
   }
 
-  private frameFor(box: THREE.Box3): CameraFrame {
-    const sphere = box.getBoundingSphere(new THREE.Sphere());
-    const verticalDistance = sphere.radius / Math.sin(THREE.MathUtils.degToRad(this.camera.fov) / 2);
-    const horizontalDistance = verticalDistance / Math.max(this.camera.aspect, 0.75);
-    return { target: sphere.center, distance: Math.max(verticalDistance, horizontalDistance, 1) * 1.24 };
+  private currentCameraDistance(): number {
+    return Math.max(this.camera.position.distanceTo(this.controls.target), 1);
+  }
+
+  private frameFor(box: THREE.Box3, direction: THREE.Vector3, distance: number): CameraFrame {
+    const target = box.getCenter(new THREE.Vector3());
+    const forward = direction.clone().normalize().negate();
+    const worldUp = Math.abs(forward.y) > 0.98 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(0, 1, 0);
+    const right = new THREE.Vector3().crossVectors(forward, worldUp).normalize();
+    const up = new THREE.Vector3().crossVectors(right, forward).normalize();
+    const corners = getBoxCorners(box);
+    let halfWidth = 0;
+    let halfHeight = 0;
+    for (const corner of corners) {
+      const offset = corner.sub(target);
+      halfWidth = Math.max(halfWidth, Math.abs(offset.dot(right)));
+      halfHeight = Math.max(halfHeight, Math.abs(offset.dot(up)));
+    }
+    const aspect = Math.max(this.camera.right / Math.max(this.camera.top, 0.01), 0.01);
+    const requiredHalfHeight = Math.max(halfHeight, halfWidth / aspect, 0.01) * FIT_MARGIN;
+    return { target, distance: Math.max(distance, 1), zoom: 1 / requiredHalfHeight };
   }
 
   private pickAt(ndcX: number, ndcY: number): THREE.Object3D | null {
@@ -249,6 +281,7 @@ export class ViewerEngine {
     if (!animate) {
       this.controls.target.copy(frame.target);
       this.camera.position.copy(toPosition);
+      this.camera.zoom = frame.zoom;
       this.updateCameraClipping(frame.distance);
       this.controls.update();
       this.cameraTween = null;
@@ -259,6 +292,8 @@ export class ViewerEngine {
       toPosition,
       fromTarget: new THREE.Vector3().copy(this.controls.target),
       toTarget: frame.target.clone(),
+      fromZoom: this.camera.zoom,
+      toZoom: frame.zoom,
       start: performance.now(),
     };
   }
@@ -271,6 +306,7 @@ export class ViewerEngine {
     const eased = progress < 0.5 ? 4 * progress ** 3 : 1 - (-2 * progress + 2) ** 3 / 2;
     this.camera.position.lerpVectors(tween.fromPosition, tween.toPosition, eased);
     this.controls.target.copy(new THREE.Vector3().lerpVectors(tween.fromTarget, tween.toTarget, eased));
+    this.camera.zoom = THREE.MathUtils.lerp(tween.fromZoom, tween.toZoom, eased);
     this.updateCameraClipping(this.camera.position.distanceTo(this.controls.target));
     if (progress >= 1) this.cameraTween = null;
   }
@@ -288,6 +324,20 @@ export class ViewerEngine {
     this.stepCameraTween();
     this.renderer.render(this.scene, this.camera);
   }
+}
+
+function getBoxCorners(box: THREE.Box3): THREE.Vector3[] {
+  const { min, max } = box;
+  return [
+    new THREE.Vector3(min.x, min.y, min.z),
+    new THREE.Vector3(min.x, min.y, max.z),
+    new THREE.Vector3(min.x, max.y, min.z),
+    new THREE.Vector3(min.x, max.y, max.z),
+    new THREE.Vector3(max.x, min.y, min.z),
+    new THREE.Vector3(max.x, min.y, max.z),
+    new THREE.Vector3(max.x, max.y, min.z),
+    new THREE.Vector3(max.x, max.y, max.z),
+  ];
 }
 
 function countObjectGeometry(object: THREE.Object3D): RenderStats {
