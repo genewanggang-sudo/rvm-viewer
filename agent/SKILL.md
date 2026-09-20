@@ -1,5 +1,5 @@
 ---
-name: rvm-viewer
+name: rvm-viewer-v3
 description: 用户上传一个 .rvm 工业模型及可选 CADC 属性文件并要求在 AIDT 聊天中查看时，生成指向已部署 RVM Viewer 的薄 HTML，并用 send_file_to_user 发送该 HTML。
 license: MIT
 ---
