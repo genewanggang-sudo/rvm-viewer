@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Boxes, ChevronDown, ChevronRight, X } from 'lucide-react';
 import type { RvmAttributeStats, RvmTreeNode } from '../viewer/rvmSdk.js';
+import { rvmNodeDisplayPath } from '../viewer/rvmSdk.js';
 
 interface ModelExplorerProps {
   tree: RvmTreeNode;
@@ -92,7 +93,12 @@ function TreeItem({ node, selectedNode, expanded, onSelect, onToggle }: TreeItem
         ) : (
           <span className="rv-tree__spacer" aria-hidden="true" />
         )}
-        <button className="rv-tree__select" type="button" title={node.path} onClick={() => onSelect(node)}>
+        <button
+          className="rv-tree__select"
+          type="button"
+          title={rvmNodeDisplayPath(node)}
+          onClick={() => onSelect(node)}
+        >
           <span>{node.name || '(未命名节点)'}</span>
           {node.propertyCount > 0 ? <small>{node.propertyCount}</small> : null}
         </button>

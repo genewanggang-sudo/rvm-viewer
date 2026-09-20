@@ -49,13 +49,17 @@ export interface RvmMeta {
 
 export interface RvmTreeNode {
   name: string;
-  path: string;
   segments: string[];
   visible: boolean;
   excluded: boolean;
   entityCount: number;
   propertyCount: number;
   children: RvmTreeNode[];
+}
+
+/** 展示用路径（SDK 0.4.0 起 TreeNode 不再带 path，寻址一律用 segments）。 */
+export function rvmNodeDisplayPath(node: Pick<RvmTreeNode, 'segments'>): string {
+  return node.segments.length > 1 ? node.segments.slice(1).join('/') : '(根节点)';
 }
 
 export interface RvmProperty {

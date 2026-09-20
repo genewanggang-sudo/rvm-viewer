@@ -1,6 +1,7 @@
 import { ListTree, X } from 'lucide-react';
 import type { PropertyPhase } from '../hooks/useViewer.js';
 import type { RvmProperty, RvmTreeNode } from '../viewer/rvmSdk.js';
+import { rvmNodeDisplayPath } from '../viewer/rvmSdk.js';
 
 interface PropertiesPanelProps {
   node: RvmTreeNode | null;
@@ -31,7 +32,7 @@ export function PropertiesPanel({
       {node ? (
         <div className="rv-property-node">
           <strong title={node.name}>{node.name || '(未命名节点)'}</strong>
-          <span title={node.path}>{node.path}</span>
+          <span title={rvmNodeDisplayPath(node)}>{rvmNodeDisplayPath(node)}</span>
         </div>
       ) : null}
       <div className="rv-properties-scroll">

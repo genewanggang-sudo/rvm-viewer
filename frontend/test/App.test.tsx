@@ -27,7 +27,6 @@ const ui: ViewerUiState = {
 
 const tree: RvmTreeNode = {
   name: 'plant',
-  path: '/plant',
   segments: ['plant'],
   visible: true,
   excluded: false,

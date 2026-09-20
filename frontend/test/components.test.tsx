@@ -136,7 +136,6 @@ describe('LocalFileLoader', () => {
 
 const tree: RvmTreeNode = {
   name: 'ROOT',
-  path: '/ROOT',
   segments: ['ROOT'],
   visible: true,
   excluded: false,
@@ -145,7 +144,6 @@ const tree: RvmTreeNode = {
   children: [
     {
       name: '',
-      path: '/ROOT/CHILD',
       segments: ['ROOT', 'CHILD'],
       visible: true,
       excluded: false,

@@ -1,5 +1,5 @@
 /**
- * rvm-sdk.d.ts — RVM wasm 能力层 TypeScript 声明（v0.3.0-stage3）
+ * rvm-sdk.d.ts — RVM wasm 能力层 TypeScript 声明（v0.4.0-stage3）
  *
  * **本文件由 cmd/sdkgen 自动生成，勿手改。**
  * 单一事实源是 server-go/internal/apischema（op 清单与文档）；
@@ -41,8 +41,6 @@ export interface MetaInfo {
 /** 场景树节点（tree 的返回，递归结构）。 */
 export interface TreeNode {
   name: string;
-  /** 形如 "/WD1-PSUP/0001" 的字符串路径（展示用；寻址请用 segments）。 */
-  path: string;
   /** 从根下第一级起的节点名数组——一切按节点寻址的接口都用它。 */
   segments: string[];
   visible: boolean;

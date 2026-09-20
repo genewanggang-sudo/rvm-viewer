@@ -100,7 +100,6 @@ function deferred<T>(): {
 
 const child: RvmTreeNode = {
   name: 'child',
-  path: '/plant/child',
   segments: ['plant', 'child'],
   visible: true,
   excluded: false,
@@ -111,7 +110,6 @@ const child: RvmTreeNode = {
 
 const tree: RvmTreeNode = {
   name: 'plant',
-  path: '/plant',
   segments: ['plant'],
   visible: true,
   excluded: false,
