@@ -2,9 +2,33 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Boxes, ChevronDown, ChevronRight, Crosshair, Eye, EyeOff, ScanEye, X } from 'lucide-react';
 import type { RvmAttributeStats, RvmTreeNode } from '../viewer/rvmSdk.js';
 import { rvmNodeDisplayPath } from '../viewer/rvmSdk.js';
-import { childKey, findIndexPath, indexPathKeys, TREE_ROOT_KEY } from '../viewer/treeUtils.js';
+import {
+  childKey,
+  buildGeometryIndex,
+  findIndexPath,
+  indexPathKeys,
+  TREE_ROOT_KEY,
+} from '../viewer/treeUtils.js';
 
 const SEARCH_RESULT_LIMIT = 200;
+const DEFAULT_TREE_WIDTH = 280;
+const MIN_TREE_WIDTH = 220;
+const TREE_WIDTH_STORAGE_KEY = 'rv-tree-width';
+
+function clampTreeWidth(value: number): number {
+  const max = Math.max(MIN_TREE_WIDTH + 80, Math.round(window.innerWidth * 0.6));
+  return Math.min(Math.max(Math.round(value), MIN_TREE_WIDTH), max);
+}
+
+function initialTreeWidth(): number {
+  try {
+    const stored = window.localStorage.getItem(TREE_WIDTH_STORAGE_KEY);
+    if (stored) return clampTreeWidth(Number(stored));
+  } catch {
+    /* localStorage 不可用时使用默认宽度 */
+  }
+  return DEFAULT_TREE_WIDTH;
+}
 
 interface ModelExplorerProps {
   tree: RvmTreeNode;
@@ -35,8 +59,46 @@ export function ModelExplorer({
 }: ModelExplorerProps): React.JSX.Element {
   const [expanded, setExpanded] = useState(() => new Set([TREE_ROOT_KEY]));
   const [query, setQuery] = useState('');
+  const [width, setWidth] = useState(initialTreeWidth);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   const pendingScrollKey = useRef<string | null>(null);
+  const resizeDrag = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
+
+  useEffect(() => {
+    document.documentElement.style.setProperty('--rv-dock-left-width', `${width}px`);
+    try {
+      window.localStorage.setItem(TREE_WIDTH_STORAGE_KEY, String(width));
+    } catch {
+      /* localStorage 不可用时跳过持久化 */
+    }
+  }, [width]);
+
+  const onResizeStart = (event: React.PointerEvent<HTMLDivElement>): void => {
+    resizeDrag.current = { pointerId: event.pointerId, startX: event.clientX, startWidth: width };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+  const onResizeMove = (event: React.PointerEvent<HTMLDivElement>): void => {
+    const drag = resizeDrag.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const next = drag.startWidth + event.clientX - drag.startX;
+    if (Number.isFinite(next)) setWidth(clampTreeWidth(next));
+  };
+  const onResizeEnd = (event: React.PointerEvent<HTMLDivElement>): void => {
+    if (resizeDrag.current?.pointerId !== event.pointerId) return;
+    resizeDrag.current = null;
+  };
+  const onResizeKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      setWidth((current) => clampTreeWidth(current - 16));
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      setWidth((current) => clampTreeWidth(current + 16));
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      setWidth(clampTreeWidth(DEFAULT_TREE_WIDTH));
+    }
+  };
 
   const toggleExpanded = (key: string, next: boolean): void => {
     setExpanded((current) => {
@@ -81,6 +143,7 @@ export function ModelExplorer({
     if (typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'nearest' });
   });
 
+  const geometryIndex = useMemo(() => buildGeometryIndex(tree), [tree]);
   const matches = useMemo(() => searchTree(tree, query), [tree, query]);
 
   return (
@@ -147,6 +210,7 @@ export function ModelExplorer({
             nodeKey={TREE_ROOT_KEY}
             parentHidden={false}
             hiddenKeys={hiddenKeys}
+            geometryIndex={geometryIndex}
             selectedNode={selectedNode}
             expanded={expanded}
             rowRefs={rowRefs}
@@ -158,6 +222,20 @@ export function ModelExplorer({
           />
         </ul>
       </div>
+      <div
+        className="rv-dock__resize"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="调整面板宽度"
+        title="拖拽调整宽度 · 双击复位"
+        tabIndex={0}
+        onPointerDown={onResizeStart}
+        onPointerMove={onResizeMove}
+        onPointerUp={onResizeEnd}
+        onPointerCancel={onResizeEnd}
+        onDoubleClick={() => setWidth(clampTreeWidth(DEFAULT_TREE_WIDTH))}
+        onKeyDown={onResizeKeyDown}
+      />
     </aside>
   );
 }
@@ -167,6 +245,7 @@ interface TreeItemProps {
   nodeKey: string;
   parentHidden: boolean;
   hiddenKeys: Set<string>;
+  geometryIndex: WeakMap<RvmTreeNode, boolean>;
   selectedNode: RvmTreeNode | null;
   expanded: Set<string>;
   rowRefs: React.MutableRefObject<Map<string, HTMLDivElement>>;
@@ -182,6 +261,7 @@ function TreeItem({
   nodeKey,
   parentHidden,
   hiddenKeys,
+  geometryIndex,
   selectedNode,
   expanded,
   rowRefs,
@@ -195,6 +275,10 @@ function TreeItem({
   const isExpanded = expanded.has(nodeKey);
   const isSelected = selectedNode === node;
   const hidden = parentHidden || hiddenKeys.has(nodeKey);
+  const hasGeometry = geometryIndex.get(node) === true;
+  const selectTitle = hasGeometry
+    ? rvmNodeDisplayPath(node)
+    : `${rvmNodeDisplayPath(node)}（无三维实体，仅供组织归类）`;
   const isolate = (): void => onIsolate(node);
   const toggleVisible = (): void => onToggleVisible(node, nodeKey);
 
@@ -223,7 +307,7 @@ function TreeItem({
         <button
           className="rv-tree__select"
           type="button"
-          title={rvmNodeDisplayPath(node)}
+          title={selectTitle}
           onClick={() => {
             onSelect(node);
             onToggleExpanded(nodeKey, true);
@@ -234,35 +318,40 @@ function TreeItem({
             onLocate(node);
           }}
         >
-          <span>{node.name || '(未命名节点)'}</span>
+          <span className={hasGeometry ? undefined : 'rv-tree__name--empty'}>
+            {node.name || '(未命名节点)'}
+          </span>
           {node.propertyCount > 0 ? <small>{node.propertyCount}</small> : null}
         </button>
-        <span className="rv-tree__tools">
-          <button
-            type="button"
-            aria-label={`隔离显示 ${nodeDisplayName(node)}`}
-            title="隔离显示"
-            onClick={isolate}
-          >
-            <ScanEye aria-hidden="true" size={14} />
-          </button>
-          <button
-            type="button"
-            aria-label={`${hidden ? '显示' : '隐藏'} ${nodeDisplayName(node)}`}
-            title={hidden ? '显示子树' : '隐藏子树'}
-            onClick={toggleVisible}
-          >
-            {hidden ? <EyeOff aria-hidden="true" size={14} /> : <Eye aria-hidden="true" size={14} />}
-          </button>
-          <button
-            type="button"
-            aria-label={`定位 ${nodeDisplayName(node)}`}
-            title="定位到三维模型"
-            onClick={() => onLocate(node)}
-          >
-            <Crosshair aria-hidden="true" size={14} />
-          </button>
-        </span>
+        {/* 无三维实体的组织节点：定位/隔离/显隐都是无效操作，不显示工具 */}
+        {hasGeometry ? (
+          <span className="rv-tree__tools">
+            <button
+              type="button"
+              aria-label={`隔离显示 ${nodeDisplayName(node)}`}
+              title="隔离显示"
+              onClick={isolate}
+            >
+              <ScanEye aria-hidden="true" size={14} />
+            </button>
+            <button
+              type="button"
+              aria-label={`${hidden ? '显示' : '隐藏'} ${nodeDisplayName(node)}`}
+              title={hidden ? '显示子树' : '隐藏子树'}
+              onClick={toggleVisible}
+            >
+              {hidden ? <EyeOff aria-hidden="true" size={14} /> : <Eye aria-hidden="true" size={14} />}
+            </button>
+            <button
+              type="button"
+              aria-label={`定位 ${nodeDisplayName(node)}`}
+              title="定位到三维模型"
+              onClick={() => onLocate(node)}
+            >
+              <Crosshair aria-hidden="true" size={14} />
+            </button>
+          </span>
+        ) : null}
       </div>
       {hasChildren && isExpanded ? (
         <ul role="group">
@@ -273,6 +362,7 @@ function TreeItem({
               nodeKey={childKey(nodeKey, index)}
               parentHidden={hidden}
               hiddenKeys={hiddenKeys}
+              geometryIndex={geometryIndex}
               selectedNode={selectedNode}
               expanded={expanded}
               rowRefs={rowRefs}

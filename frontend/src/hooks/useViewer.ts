@@ -137,6 +137,10 @@ export function useViewer(maxLocalFileBytes: number): ViewerController {
     engineRef.current?.setHighlighted(null);
   }, []);
 
+  /**
+   * 定位语义：目标及其祖先必须可见（定位胜过隐藏）——先恢复被隐藏的
+   * 祖先分支并同步隐藏集合，再飞向目标包围盒。
+   */
   const locateNode = useCallback((node: RvmTreeNode): void => {
     const session = sessionRef.current;
     const engine = engineRef.current;
@@ -144,6 +148,27 @@ export function useViewer(maxLocalFileBytes: number): ViewerController {
     if (node === session.tree) {
       engine.frameModel();
       return;
+    }
+    const path = findIndexPath(session.tree, node);
+    if (!path) return;
+    const revealed: string[] = [];
+    let ancestor = session.tree;
+    let ancestorKey = TREE_ROOT_KEY;
+    for (const index of path) {
+      ancestor = ancestor.children[index];
+      ancestorKey = childKey(ancestorKey, index);
+      const ancestorObject = session.resolveObject(ancestor);
+      if (ancestorObject && !ancestorObject.visible) {
+        engine.setSubtreeVisible(ancestorObject, true);
+        revealed.push(ancestorKey);
+      }
+    }
+    if (revealed.length > 0) {
+      setHiddenKeys((current) => {
+        const next = new Set(current);
+        for (const key of revealed) next.delete(key);
+        return next;
+      });
     }
     const object = session.resolveObject(node);
     if (object) engine.frameObject(object);

@@ -234,31 +234,84 @@ describe('model information panels', () => {
     await user.click(screen.getByRole('button', { name: '隐藏 ROOT' }));
     expect(onToggleVisible).toHaveBeenCalledWith(tree, '0');
 
-    await user.click(screen.getByRole('button', { name: '隐藏 (未命名节点)' }));
-    expect(onToggleVisible).toHaveBeenCalledWith(tree.children[0], '0/0');
+    await user.click(screen.getByRole('button', { name: '定位 ROOT' }));
+    expect(onLocate).toHaveBeenCalledWith(tree);
 
-    await user.click(screen.getByRole('button', { name: '定位 (未命名节点)' }));
-    expect(onLocate).toHaveBeenCalledWith(tree.children[0]);
+    // 无三维实体的组织节点不提供定位/隔离/显隐工具
+    expect(screen.queryByRole('button', { name: '隐藏 (未命名节点)' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '隔离显示 (未命名节点)' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '定位 (未命名节点)' })).not.toBeInTheDocument();
   });
 
   it('dims hidden branches and offers a restore action', async () => {
     const user = userEvent.setup();
     const onResetVisibility = vi.fn();
+    // 夹具：'' 组有实体子级 LEAF（级联淡化 + 隐藏态眼睛图标），EMPTY 组无实体（无工具图标）
+    const leaf: RvmTreeNode = {
+      name: 'LEAF',
+      segments: ['ROOT', '', 'LEAF'],
+      visible: true,
+      excluded: false,
+      entityCount: 1,
+      propertyCount: 0,
+      children: [],
+    };
+    const unnamedGroup: RvmTreeNode = {
+      name: '',
+      segments: ['ROOT', ''],
+      visible: true,
+      excluded: false,
+      entityCount: 1,
+      propertyCount: 0,
+      children: [leaf],
+    };
+    const emptyGroup: RvmTreeNode = {
+      name: 'EMPTY',
+      segments: ['ROOT', 'EMPTY'],
+      visible: true,
+      excluded: false,
+      entityCount: 0,
+      propertyCount: 0,
+      children: [],
+    };
+    const dimTree: RvmTreeNode = {
+      name: 'ROOT',
+      segments: ['ROOT'],
+      visible: true,
+      excluded: false,
+      entityCount: 2,
+      propertyCount: 0,
+      children: [unnamedGroup, emptyGroup],
+    };
     const { rerender } = render(
       <ModelExplorer
-        tree={tree}
+        tree={dimTree}
         selectedNode={null}
         attributeStats={{ loaded: false, attached: 0, missed: 0 }}
         onSelect={vi.fn()}
         {...explorerProps}
-        hiddenKeys={new Set(['0/0'])}
+        hiddenKeys={new Set(['0/0', '0/1'])}
         onResetVisibility={onResetVisibility}
         open
       />
     );
-    expect(screen.getByText('(未命名节点)')).toBeInTheDocument();
-    const hiddenRow = screen.getByText('(未命名节点)').closest('.rv-tree__row');
-    expect(hiddenRow).toHaveClass('rv-tree__row--hidden');
+
+    // 隐藏的具名空组：淡化但无工具图标，名称带空组样式且悬停有说明
+    const emptyRow = screen.getByText('EMPTY').closest('.rv-tree__row');
+    expect(emptyRow).toHaveClass('rv-tree__row--hidden');
+    expect(emptyRow?.querySelectorAll('.rv-tree__tools button')).toHaveLength(0);
+    expect(screen.getByText('EMPTY')).toHaveClass('rv-tree__name--empty');
+    expect(screen.getByRole('button', { name: 'EMPTY' }).getAttribute('title')).toContain('无三维实体');
+
+    // 隐藏的无名组：行淡化 + 眼睛为 EyeOff + 祖先级联淡化到 LEAF
+    const unnamedRow = screen.getByText('(未命名节点)').closest('.rv-tree__row');
+    expect(unnamedRow).toHaveClass('rv-tree__row--hidden');
+    expect(
+      within(unnamedRow as HTMLElement).getByRole('button', { name: '显示 (未命名节点)' })
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '展开 (未命名节点)' }));
+    const leafRow = screen.getByText('LEAF').closest('.rv-tree__row');
+    expect(leafRow).toHaveClass('rv-tree__row--hidden');
     expect(screen.getByText('ROOT').closest('.rv-tree__row')).not.toHaveClass('rv-tree__row--hidden');
 
     await user.click(screen.getByRole('button', { name: '恢复全部显示' }));
@@ -266,7 +319,7 @@ describe('model information panels', () => {
 
     rerender(
       <ModelExplorer
-        tree={tree}
+        tree={dimTree}
         selectedNode={null}
         attributeStats={{ loaded: false, attached: 0, missed: 0 }}
         onSelect={vi.fn()}
@@ -277,6 +330,7 @@ describe('model information panels', () => {
       />
     );
     expect(screen.queryByRole('button', { name: '恢复全部显示' })).not.toBeInTheDocument();
+    expect(unnamedRow?.classList.contains('rv-tree__row--hidden')).toBe(false);
   });
 
   it('searches nodes by name and locates a picked result', async () => {
@@ -387,6 +441,102 @@ describe('model information panels', () => {
     expect(screen.getByText('仅显示前 200 条结果')).toBeInTheDocument();
     const results = within(screen.getByLabelText('查找结果'));
     expect(results.getAllByRole('button', { name: /^PIP-/ })).toHaveLength(200);
+  });
+
+  it('resizes the dock by dragging, resets on double click, and persists width', async () => {
+    const user = userEvent.setup();
+    window.localStorage.removeItem('rv-tree-width');
+    render(
+      <ModelExplorer
+        tree={tree}
+        selectedNode={null}
+        attributeStats={{ loaded: false, attached: 0, missed: 0 }}
+        onSelect={vi.fn()}
+        {...explorerProps}
+        open
+      />
+    );
+    const widthVar = () => document.documentElement.style.getPropertyValue('--rv-dock-left-width');
+    expect(widthVar()).toBe('280px');
+
+    const handle = screen.getByRole('separator', { name: '调整面板宽度' });
+    // jsdom 的 PointerEvent 可能不带 clientX，组件对 NaN 做了防御；这里补 pointerId 走正常分支
+    const pointerWithId = (type: string, clientX: number): void => {
+      const event = new MouseEvent(type, { clientX, bubbles: true });
+      Object.defineProperty(event, 'pointerId', { value: 1 });
+      fireEvent(handle, event);
+    };
+    // 支持 pointer capture 的浏览器会在拖拽开始时捕获指针
+    const capture = vi.fn();
+    Object.defineProperty(handle, 'setPointerCapture', { configurable: true, value: capture });
+    pointerWithId('pointerdown', 300);
+    expect(capture).toHaveBeenCalledWith(1);
+    pointerWithId('pointermove', 460);
+    pointerWithId('pointerup', 460);
+    delete (handle as unknown as { setPointerCapture?: unknown }).setPointerCapture;
+    expect(widthVar()).toBe('440px');
+    expect(window.localStorage.getItem('rv-tree-width')).toBe('440');
+
+    // 无活动拖拽时的 pointerup 是安全空操作
+    pointerWithId('pointerup', 300);
+    expect(widthVar()).toBe('440px');
+
+    // 键盘微调与越界钳制
+    fireEvent.keyDown(handle, { key: 'ArrowLeft' });
+    expect(widthVar()).toBe('424px');
+    fireEvent.keyDown(handle, { key: 'ArrowRight' });
+    expect(widthVar()).toBe('440px');
+    fireEvent.keyDown(handle, { key: 'Home' });
+    expect(widthVar()).toBe('280px');
+    pointerWithId('pointerdown', 9000);
+    pointerWithId('pointermove', 20000);
+    pointerWithId('pointerup', 20000);
+    expect(Number.parseInt(widthVar().replace('px', ''), 10)).toBeLessThanOrEqual(
+      Math.round(window.innerWidth * 0.6)
+    );
+
+    // 无 clientX 的异常事件不产生 NaN
+    pointerWithId('pointerdown', 300);
+    const badMove = new MouseEvent('pointermove', { bubbles: true });
+    Object.defineProperty(badMove, 'pointerId', { value: 1 });
+    fireEvent(handle, badMove);
+    pointerWithId('pointerup', 300);
+    expect(widthVar()).not.toBe('NaNpx');
+
+    // 双击复位
+    await user.dblClick(handle);
+    expect(widthVar()).toBe('280px');
+    window.localStorage.removeItem('rv-tree-width');
+  });
+
+  it('falls back to the default width when localStorage is unavailable', () => {
+    const original = Object.getOwnPropertyDescriptor(window, 'localStorage');
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      get() {
+        throw new Error('storage blocked');
+      },
+    });
+    try {
+      render(
+        <ModelExplorer
+          tree={tree}
+          selectedNode={null}
+          attributeStats={{ loaded: false, attached: 0, missed: 0 }}
+          onSelect={vi.fn()}
+          {...explorerProps}
+          open
+        />
+      );
+      const widthVar = () => document.documentElement.style.getPropertyValue('--rv-dock-left-width');
+      expect(widthVar()).toBe('280px');
+
+      const handle = screen.getByRole('separator', { name: '调整面板宽度' });
+      fireEvent.keyDown(handle, { key: 'ArrowRight' });
+      expect(widthVar()).toBe('296px');
+    } finally {
+      if (original) Object.defineProperty(window, 'localStorage', original);
+    }
   });
 
   it('renders all property panel states and closes', async () => {

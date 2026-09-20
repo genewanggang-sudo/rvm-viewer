@@ -137,6 +137,7 @@ export async function importRvmModel(
     const glbCopy = new Uint8Array(glb.byteLength);
     glbCopy.set(glb);
     const gltf = await new GLTFLoader().parseAsync(glbCopy.buffer, '');
+    localizeSyntheticRoot(tree.root);
 
     return {
       object: gltf.scene,
@@ -170,6 +171,14 @@ function ensureRvmFileName(name: string): string {
   const trimmed = name.trim();
   if (/\.rvm$/i.test(trimmed)) return trimmed;
   return `${trimmed || 'model'}.rvm`;
+}
+
+/**
+ * SDK 合成的根节点固定叫 "RootNode"，不是模型数据里的名字；
+ * 展示层改为中文，寻址用的 segments 不受影响。
+ */
+function localizeSyntheticRoot(root: RvmTreeNode): void {
+  if (root.name === 'RootNode') root.name = '根节点';
 }
 
 /**

@@ -196,7 +196,7 @@ body,
   border-radius: 6px;
 }
 .rv-app--workspace .rv-camera-tools {
-  right: 336px;
+  right: calc(var(--rv-dock-left-width, 280px) + 56px);
 }
 .rv-camera-tools button {
   width: 34px;
@@ -219,7 +219,7 @@ body,
 }
 .rv-dock--left {
   left: 0;
-  width: 280px;
+  width: var(--rv-dock-left-width, 280px);
   border-right: 1px solid var(--rv-border);
 }
 .rv-dock--right {
@@ -331,6 +331,22 @@ body,
   color: var(--rv-text-dim);
   font-size: 10px;
 }
+.rv-dock__resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -3px;
+  width: 6px;
+  z-index: 6;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+}
+.rv-dock__resize:hover,
+.rv-dock__resize:focus-visible {
+  background: rgba(255, 164, 61, 0.3);
+  outline: none;
+}
 .rv-attribute-summary {
   display: flex;
   align-items: center;
@@ -361,7 +377,37 @@ body,
 .rv-properties-scroll {
   min-height: 0;
   flex: 1;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+/* 细滚动条，配色融入面板；左树右侧留缝避免贴住拖拽手柄 */
+.rv-tree-scroll,
+.rv-tree-search-results {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 178, 0.28) transparent;
+}
+.rv-tree-scroll {
+  margin-right: 8px;
+}
+.rv-tree-scroll::-webkit-scrollbar,
+.rv-tree-search-results::-webkit-scrollbar {
+  width: 5px;
+}
+.rv-tree-scroll::-webkit-scrollbar-track,
+.rv-tree-search-results::-webkit-scrollbar-track {
+  background: transparent;
+}
+.rv-tree-scroll::-webkit-scrollbar-thumb,
+.rv-tree-search-results::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: rgba(148, 163, 178, 0.28);
+}
+.rv-tree-scroll::-webkit-scrollbar-thumb:hover,
+.rv-tree-search-results::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 178, 0.45);
+}
+.rv-tree-search-results {
+  overflow-x: hidden;
 }
 .rv-tree,
 .rv-tree ul {
@@ -373,7 +419,6 @@ body,
   margin-left: 15px;
 }
 .rv-tree__row {
-  min-width: max-content;
   height: 30px;
   display: flex;
   align-items: stretch;
@@ -446,11 +491,18 @@ body,
   white-space: nowrap;
 }
 .rv-tree__select span {
-  max-width: 205px;
+  min-width: 0;
+  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* 无三维实体的组织节点：淡化 + 斜体，点击不会定位到几何属于预期 */
+.rv-tree__name--empty {
+  color: var(--rv-text-dim);
+  font-style: italic;
+}
 .rv-tree__select small {
+  flex: 0 0 auto;
   color: var(--rv-text-dim);
   font-size: 10px;
   font-variant-numeric: tabular-nums;
@@ -533,6 +585,9 @@ body,
   }
   .rv-dock--open {
     transform: translateX(0);
+  }
+  .rv-dock__resize {
+    display: none;
   }
   .rv-dock__close {
     display: grid;

@@ -245,6 +245,25 @@ describe('RVM SDK adapter', () => {
     expect(rpc.call).toHaveBeenCalledWith('close', { handle: 'handle-1' });
   });
 
+  it('renames the synthetic RootNode to its Chinese display name', async () => {
+    const syntheticTree: RvmTreeNode = { ...tree, name: 'RootNode' };
+    const rpc = createRpc();
+    rpc.call.mockImplementation(async (operation: string) => {
+      if (operation === 'open') return openResult();
+      if (operation === 'preview') return new Uint8Array([1]);
+      if (operation === 'tree') return { root: syntheticTree };
+      return undefined;
+    });
+    doubles.parseAsync.mockResolvedValue({ scene: new THREE.Group() });
+    installRpc(rpc);
+    const { importRvmModel } = await import('../src/viewer/rvmSdk.js');
+
+    const session = await importRvmModel(new ArrayBuffer(1), 'root.rvm');
+    expect(session.tree.name).toBe('根节点');
+    expect(session.tree.segments).toEqual(['plant']);
+    await session.close();
+  });
+
   it('pairs the tree with the GLB scene by child order for tree-scene linkage', async () => {
     const leaf: RvmTreeNode = { ...tree, name: 'M', segments: ['plant', 'A', 'M'], children: [] };
     const branchA: RvmTreeNode = { ...tree, name: 'A', segments: ['plant', 'A'], children: [leaf] };

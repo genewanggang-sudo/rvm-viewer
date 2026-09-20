@@ -475,6 +475,14 @@ describe('useViewer', () => {
     current().locateNode(tree);
     expect(mocks.engineFrameModel).toHaveBeenLastCalledWith();
     expect(mocks.engineFrameModel).toHaveBeenCalledTimes(2);
+
+    // 定位胜过隐藏：目标被隐藏时，定位先恢复显示再飞过去。
+    act(() => current().toggleNodeVisible(child, '0/0'));
+    expect(current().hiddenKeys).toEqual(new Set(['0/0']));
+    act(() => current().locateNode(child));
+    expect(mocks.engineSetSubtreeVisible).toHaveBeenLastCalledWith(childObject, true);
+    expect(current().hiddenKeys).toEqual(new Set());
+    expect(mocks.engineFrameObject).toHaveBeenLastCalledWith(childObject);
   });
 
   it('toggles subtree visibility and tracks hidden keys locally', async () => {
@@ -570,6 +578,8 @@ describe('useViewer', () => {
     // Isolating a node outside the tree is a no-op.
     act(() => current().isolateNode({ ...branchB }));
     expect(mocks.engineFrameModel).toHaveBeenCalledOnce();
+    act(() => current().locateNode({ ...branchB }));
+    expect(mocks.engineFrameModel).toHaveBeenCalledOnce();
 
     // Unmapped nodes cannot be toggled, and isolating one skips the camera fit.
     act(() => current().toggleNodeVisible({ ...branchB }, '9/9'));
@@ -577,6 +587,18 @@ describe('useViewer', () => {
     act(() => current().isolateNode(branchC));
     expect(mocks.engineFrameObject).toHaveBeenLastCalledWith(objectB);
     expect(current().hiddenKeys).toEqual(new Set(['0/0', '0/1']));
+
+    // 隔离后定位隐藏分支：只恢复定位路径上的分支，其余保持隐藏。
+    act(() => current().locateNode(branchA));
+    expect(mocks.engineSetSubtreeVisible).toHaveBeenLastCalledWith(objectA, true);
+    expect(current().hiddenKeys).toEqual(new Set(['0/1']));
+    expect(mocks.engineFrameObject).toHaveBeenLastCalledWith(objectA);
+
+    // 定位树上无场景映射的节点：静默跳过，不动相机也不改隐藏集合。
+    const framesBefore = mocks.engineFrameObject.mock.calls.length;
+    act(() => current().locateNode(branchC));
+    expect(mocks.engineFrameObject.mock.calls.length).toBe(framesBefore);
+    expect(current().hiddenKeys).toEqual(new Set(['0/1']));
   });
 
   it('ignores scene picks and visibility work before a model is loaded', () => {
