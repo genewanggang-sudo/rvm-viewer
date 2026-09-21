@@ -33,7 +33,8 @@ node "<SKILL_DIR>/scripts/pack_thin_html.mjs" \
    **输出文件名必须包含模型名，不要固定叫 `rvm-viewer.html`**：平台聊天预览按
    文件名缓存内容，同名文件会让用户打开到旧模型的页面。
 3. 确认 stdout 返回 `{"ok":true,"mode":"rvm-fileref",...}`，并核对 `attrsRef` 是否符合输入。
-4. 用 `send_file_to_user` 发送 `rvm-viewer.html` 本身，并说明从聊天预览打开。
+4. 用 `send_file_to_user` 发送生成的查看页文件本身（即 `--output` 指定的
+   `rvm-viewer-<模型名>.html`），并说明从聊天预览打开。
 
 ## 问题回答规则
 
