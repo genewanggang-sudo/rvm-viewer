@@ -25,10 +25,13 @@ node "<SKILL_DIR>/scripts/pack_thin_html.mjs" \
   --file-ref "media/<uuid>_model.rvm" \
   --attrs-ref "media/<uuid>_model.txt" \
   --name "model.rvm" \
-  --output "<工作区>/rvm-viewer.html"
+  --output "<工作区>/rvm-viewer-<模型名>.html"
 ```
 
    没有属性文件时省略 `--attrs-ref`。
+   `<模型名>` 是去掉 `.rvm` 扩展名后的模型文件名（如 `WD1-PSUP`、`spooler`）。
+   **输出文件名必须包含模型名，不要固定叫 `rvm-viewer.html`**：平台聊天预览按
+   文件名缓存内容，同名文件会让用户打开到旧模型的页面。
 3. 确认 stdout 返回 `{"ok":true,"mode":"rvm-fileref",...}`，并核对 `attrsRef` 是否符合输入。
 4. 用 `send_file_to_user` 发送 `rvm-viewer.html` 本身，并说明从聊天预览打开。
 
